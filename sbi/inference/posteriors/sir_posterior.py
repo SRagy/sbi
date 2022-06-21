@@ -9,15 +9,17 @@ from torch import Tensor
 
 from sbi import utils as utils
 from sbi.inference.posteriors.base_posterior import NeuralPosterior
-from sbi.samplers.sir.sir import sampling_importance_resampling
+from sbi.samplers.importance.sir import sampling_importance_resampling
+from sbi.samplers.importance.importance_sampling import importance_sample
 from sbi.types import Shape, TorchTransform
 from sbi.utils.torchutils import ensure_theta_batched
 
 
 class SIRPosterior(NeuralPosterior):
-    r"""Provides rerjeciton sampling to sample from the posterior.<br/><br/>
+    r"""Provides sampling-importance resampling sampling to sample from the posterior.
+    <br/><br/>
     SNLE or SNRE train neural networks to approximate the likelihood(-ratios).
-    `SIRPosterior` allows to sample from the posterior with sampling-importance 
+    `SIRPosterior` allows to sample from the posterior with sampling-importance
     resampling (SIR).
     """
 
@@ -95,6 +97,47 @@ class SIRPosterior(NeuralPosterior):
         max_sampling_batch_size: Optional[int] = None,
         num_importance_samples: Optional[int] = None,
         sample_with: Optional[str] = None,
+        importance_weight_smoothing: str = "raw",
+    ):
+        num_samples = torch.Size(sample_shape).numel()
+        self.potential_fn.set_x(self._x_else_default_x(x))
+
+        # Replace arguments that were not passed with their default.
+        max_sampling_batch_size = (
+            self.max_sampling_batch_size
+            if max_sampling_batch_size is None
+            else max_sampling_batch_size
+        )
+        num_importance_samples = (
+            self.num_importance_samples
+            if num_importance_samples is None
+            else num_importance_samples
+        )
+
+        if sample_with is not None:
+            raise ValueError(
+                f"You set `sample_with={sample_with}`. As of sbi v0.18.0, setting "
+                f"`sample_with` is no longer supported. You have to rerun "
+                f"`.build_posterior(sample_with={sample_with}).`"
+            )
+        samples, log_importance_weights, log_norm_constant = importance_sample(
+            self.potential_fn,
+            proposal=self.proposal,
+            num_samples=num_samples,
+        )
+
+        return (
+            samples.reshape((*sample_shape, -1)),
+            log_importance_weights,
+            log_norm_constant,
+        )
+
+    def sir_sample(
+        self,
+        sample_shape: Shape = torch.Size(),
+        x: Optional[Tensor] = None,
+        max_sampling_batch_size: Optional[int] = None,
+        num_importance_samples: Optional[int] = None,
         show_progress_bars: bool = True,
     ):
         r"""Return samples from posterior $p(\theta|x)$ via SIR.
@@ -113,14 +156,6 @@ class SIRPosterior(NeuralPosterior):
         num_samples = torch.Size(sample_shape).numel()
         self.potential_fn.set_x(self._x_else_default_x(x))
 
-        potential = partial(self.potential_fn, track_gradients=True)
-
-        if sample_with is not None:
-            raise ValueError(
-                f"You set `sample_with={sample_with}`. As of sbi v0.18.0, setting "
-                f"`sample_with` is no longer supported. You have to rerun "
-                f"`.build_posterior(sample_with={sample_with}).`"
-            )
         # Replace arguments that were not passed with their default.
         max_sampling_batch_size = (
             self.max_sampling_batch_size
@@ -134,7 +169,7 @@ class SIRPosterior(NeuralPosterior):
         )
 
         samples, _ = sampling_importance_resampling(
-            potential,
+            self.potential_fn,
             proposal=self.proposal,
             num_samples=num_samples,
             show_progress_bars=show_progress_bars,
@@ -143,4 +178,3 @@ class SIRPosterior(NeuralPosterior):
         )
 
         return samples.reshape((*sample_shape, -1))
-
