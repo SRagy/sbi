@@ -84,10 +84,7 @@ class PosteriorEstimator(NeuralInference, ABC):
         self._summary.update({"rejection_sampling_acceptance_rates": []})  # type:ignore
 
     def append_simulations(
-        self,
-        theta: Tensor,
-        x: Tensor,
-        proposal: Optional[DirectPosterior] = None,
+        self, theta: Tensor, x: Tensor, proposal: Optional[DirectPosterior] = None,
     ) -> "PosteriorEstimator":
         r"""Store parameters and simulation outputs to use them for later training.
 
@@ -158,8 +155,9 @@ class PosteriorEstimator(NeuralInference, ABC):
         learning_rate: float = 5e-4,
         validation_fraction: float = 0.1,
         stop_after_epochs: int = 20,
-        max_num_epochs: int = 2**31 - 1,
+        max_num_epochs: int = 2 ** 31 - 1,
         clip_max_norm: Optional[float] = 5.0,
+        summary_fun: Optional[Callable] = lambda x: x,
         calibration_kernel: Optional[Callable] = None,
         exclude_invalid_x: bool = True,
         resume_training: bool = False,
@@ -239,6 +237,7 @@ class PosteriorEstimator(NeuralInference, ABC):
             start_idx, exclude_invalid_x, warn_on_invalid=True
         )
 
+        x = summary_fun(x)
         # Dataset is shared for training and validation loaders.
         dataset = data.TensorDataset(theta, x, prior_masks)
 
@@ -334,11 +333,7 @@ class PosteriorEstimator(NeuralInference, ABC):
                     )
                     # Take negative loss here to get validation log_prob.
                     val_losses = self._loss(
-                        theta_batch,
-                        x_batch,
-                        masks_batch,
-                        proposal,
-                        calibration_kernel,
+                        theta_batch, x_batch, masks_batch, proposal, calibration_kernel,
                     )
                     val_log_prob_sum -= val_losses.sum().item()
 
@@ -484,11 +479,7 @@ class PosteriorEstimator(NeuralInference, ABC):
 
     @abstractmethod
     def _log_prob_proposal_posterior(
-        self,
-        theta: Tensor,
-        x: Tensor,
-        masks: Tensor,
-        proposal: Optional[Any],
+        self, theta: Tensor, x: Tensor, masks: Tensor, proposal: Optional[Any],
     ) -> Tensor:
         raise NotImplementedError
 

@@ -23,6 +23,8 @@ from sbi.utils import (
     repeat_rows,
 )
 
+from sbi.utils.torchutils import BoxUniform
+
 
 class SNPE_C(PosteriorEstimator):
     def __init__(
@@ -90,8 +92,9 @@ class SNPE_C(PosteriorEstimator):
         learning_rate: float = 5e-4,
         validation_fraction: float = 0.1,
         stop_after_epochs: int = 20,
-        max_num_epochs: int = 2**31 - 1,
+        max_num_epochs: int = 2 ** 31 - 1,
         clip_max_norm: Optional[float] = 5.0,
+        summary_fun: Optional[Callable] = lambda x: x,
         calibration_kernel: Optional[Callable] = None,
         exclude_invalid_x: bool = True,
         resume_training: bool = False,
@@ -162,14 +165,18 @@ class SNPE_C(PosteriorEstimator):
             # atomic SNPE, it does not matter what the proposal is. For non-atomic
             # SNPE, we only use the latest data that was passed, i.e. the one from the
             # last proposal.
+
             proposal = self._proposal_roundwise[-1]
-            self.use_non_atomic_loss = (
-                isinstance(proposal.posterior_estimator._distribution, mdn)
-                and isinstance(self._neural_net._distribution, mdn)
-                and check_dist_class(
-                    self._prior, class_to_check=(Uniform, MultivariateNormal)
-                )[0]
-            )
+            if isinstance(proposal, BoxUniform):
+                self.use_non_atomic_loss = False
+            else:
+                self.use_non_atomic_loss = (
+                    isinstance(proposal.posterior_estimator._distribution, mdn)
+                    and isinstance(self._neural_net._distribution, mdn)
+                    and check_dist_class(
+                        self._prior, class_to_check=(Uniform, MultivariateNormal)
+                    )[0]
+                )
 
             algorithm = "non-atomic" if self.use_non_atomic_loss else "atomic"
             print(f"Using SNPE-C with {algorithm} loss")
@@ -254,11 +261,7 @@ class SNPE_C(PosteriorEstimator):
             self._maybe_z_scored_prior = self._prior
 
     def _log_prob_proposal_posterior(
-        self,
-        theta: Tensor,
-        x: Tensor,
-        masks: Tensor,
-        proposal: DirectPosterior,
+        self, theta: Tensor, x: Tensor, masks: Tensor, proposal: DirectPosterior,
     ) -> Tensor:
         """Return the log-probability of the proposal posterior.
 
