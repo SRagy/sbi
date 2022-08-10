@@ -117,15 +117,15 @@ points_ref = hausdorff_simulator(true_params, observation_trace)
 summs_ref = calculate_summary_statistics(observation_trace)
 
 posterior = infer(
-    hausdorff_simulator, prior, method="SNPE", num_simulations=1000, num_workers=7
+    hausdorff_simulator, prior, method="SNPE", num_simulations=100, num_workers=7
 )
 list(zip(prior_min, prior_max))
 
 posterior_summ = infer(
-    summ_simulation_wrapper, prior, method="SNPE", num_simulations=1000, num_workers=7
+    summ_simulation_wrapper, prior, method="SNPE", num_simulations=100, num_workers=7
 )
 
 
-with open("test_posterior", "wb") as f:
+with open("test_posterior_2", "wb") as f:
     pickle.dump(posterior, f)
 
