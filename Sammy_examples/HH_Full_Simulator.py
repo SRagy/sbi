@@ -116,16 +116,29 @@ hausdorff_simulator = get_hausdorff_simulator(data_np)
 points_ref = hausdorff_simulator(true_params, observation_trace)
 summs_ref = calculate_summary_statistics(observation_trace)
 
+path = 'saved_posteriors/dataset_1/'
+
+test_params = prior.sample((10,))
+observations = [run_HH_model(param) for param in test_params]
+
+with open(path+'raw_data','xb') as f:
+    pickle.dump(data_np, f)
+
+with open(path+'par_obs','xb') as f:
+    pickle.dump([test_params,observations], f)
+
 posterior = infer(
-    hausdorff_simulator, prior, method="SNPE", num_simulations=100, num_workers=7
-)
-list(zip(prior_min, prior_max))
-
-posterior_summ = infer(
-    summ_simulation_wrapper, prior, method="SNPE", num_simulations=100, num_workers=7
+    hausdorff_simulator, prior, method="SNPE", num_simulations=50000, num_workers=11
 )
 
-
-with open("test_posterior_2", "wb") as f:
+with open(path+"haus_posterior", "xb") as f:
     pickle.dump(posterior, f)
 
+observations = []
+
+posterior_summ = infer(
+    summ_simulation_wrapper, prior, method="SNPE", num_simulations=50000, num_workers=11
+)
+
+with open(path+"summ_posterior", "xb") as f:
+    pickle.dump(posterior_summ, f)
