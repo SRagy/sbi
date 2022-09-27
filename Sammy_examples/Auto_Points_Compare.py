@@ -67,7 +67,9 @@ def get_slcp_simulator(points, seed=None):
 
     return simulator
 
-
+thetas = slcp_prior_2.sample((32,))
+points = slcp_simulator2(thetas)
+rand_simulator = get_slcp_simulator(points)
 # Define several classes for various kinds of learnable point updates
 
 
@@ -150,36 +152,143 @@ class BestMatchingSig(torch.nn.Module):
         return distances
 
 
+class AllPoints(torch.nn.Module):
+    def __init__(self, init_points):
+        """
+        Instantiate parameter to be used as weighting.
+        """
+        super().__init__()
+        # self.linear_layer = torch.nn.Linear(8, num_points)
+        # self._matrix = torch.nn.Parameter(torch.randn((8,num_points)))
+        self._matrix = torch.nn.Parameter(init_points)
+        self._initial_basis = torch.eye(8)
+
+    def forward(self, x):
+        # (1-eps) * old_points + eps * new_points
+        # point_update = old_points + (torch.cos(self.theta)**2)*(self.new_points - self.old_points)
+        # points_to_compare = self.linear_layer(self._initial_basis).T
+        points_to_compare = self._matrix @ self._initial_basis
+
+        # essentially we're actually just interested in weight matrix
+        distances = torch.cdist(x, points_to_compare)
+
+        return distances
+
+
 num_rounds = 10
 simulator, prior = prepare_for_sbi(slcp_simulator2, slcp_prior_2)
-
 acc_list = []
-for i in range(1, 10):
+for i in range(1, 11):
     reference_samples = slcp2.get_reference_posterior_samples(num_observation=i)
     ref_obs = slcp2.get_observation(num_observation=i)
     simulator, prior = prepare_for_sbi(slcp_simulator2, slcp_prior_2)
-
     proposal = prior
     old_points = None
-    for i in range(num_rounds):
-        theta, x = simulate_for_sbi(
-            simulator, proposal, num_simulations=1000, num_workers=7
-        )
-        if i == 0:  # Doing nothing?
+    # neural_posterior = utils.posterior_nn(model="maf", embedding_net=torch.nn.Identity())
+    # inference = SNPE(prior=prior, density_estimator=neural_posterior)
+    for j in range(num_rounds):
+        theta, x = simulate_for_sbi(simulator, proposal, num_simulations=1000, num_workers=7)
+        if j == 0: # Doing nothing?
             embedding_net = BestMatching(old_points, x[:32])
-            neural_posterior = utils.posterior_nn(
-                model="maf", embedding_net=embedding_net
-            )
+            neural_posterior = utils.posterior_nn(model="maf", embedding_net=embedding_net)
             inference = SNPE(prior=prior, density_estimator=neural_posterior)
         else:
             density_estimator._embedding_net = BestMatching(old_points, x[:32])
             old_points = x[:32]
-        density_estimator = inference.append_simulations(
-            theta, x, proposal=proposal
-        ).train()
+        density_estimator = inference.append_simulations(theta, x, proposal=proposal).train()
         posterior = inference.build_posterior(density_estimator)
         proposal = posterior.set_default_x(ref_obs)
 
+    with open(f'auto_points_data_2/obs_{i}_posterior_bm.pkl','wb') as f:
+        pickle.dump(posterior, f)
+
     samples = posterior.sample((10000,))
     c2st_accuracy = c2st(samples, reference_samples)
-    acc_list.append(c2st_accuracy)
+
+    with open('auto_points_data_2/manual_logging.txt', 'a') as f:
+        f.write(f'c2st_bm_accuracy_obs_{i} = {c2st_accuracy}\n')
+
+    simulator, prior = prepare_for_sbi(slcp_simulator2, slcp_prior_2)
+    proposal = prior
+    for j in range(num_rounds):
+        theta, x = simulate_for_sbi(simulator, proposal, num_simulations=1000, num_workers=7)
+        if j == 0: # Doing nothing?
+            embedding_net = torch.nn.Identity()
+            neural_posterior = utils.posterior_nn(model="maf", embedding_net=embedding_net)
+            inference = SNPE(prior=prior, density_estimator=neural_posterior)
+        density_estimator = inference.append_simulations(theta, x, proposal=proposal).train()
+        posterior = inference.build_posterior(density_estimator)
+        proposal = posterior.set_default_x(ref_obs)
+
+
+    with open(f'auto_points_data_2/obs_{i}_posterior_full.pkl','wb') as f:
+        pickle.dump(posterior, f)
+
+    samples = posterior.sample((10000,))
+    c2st_accuracy = c2st(samples, reference_samples)
+
+    with open('auto_points_data_2/manual_logging.txt', 'a') as f:
+        f.write(f'c2st_full_accuracy_obs_{i} = {c2st_accuracy}\n')
+
+    simulator, prior = prepare_for_sbi(slcp_simulator2, slcp_prior_2)
+    proposal = prior
+    for j in range(num_rounds):
+        theta, x = simulate_for_sbi(simulator, proposal, num_simulations=1000, num_workers=7)
+        if j == 0:
+            embedding_net = AllPoints(x[:32])
+            neural_posterior = utils.posterior_nn(model="maf", embedding_net=embedding_net)
+            inference = SNPE(prior=prior, density_estimator=neural_posterior)
+        density_estimator = inference.append_simulations(theta, x, proposal=proposal).train()
+        posterior = inference.build_posterior(density_estimator)
+        proposal = posterior.set_default_x(ref_obs)
+
+    with open(f'auto_points_data_2/obs_{i}_posterior_allpts.pkl','wb') as f:
+        pickle.dump(posterior, f)
+
+    samples = posterior.sample((10000,))
+    c2st_accuracy = c2st(samples, reference_samples)
+
+    with open('auto_points_data_2/manual_logging.txt', 'a') as f:
+        f.write(f'c2st_allpts_accuracy_obs_{i} = {c2st_accuracy}\n')
+
+
+    simulator, prior = prepare_for_sbi(slcp_simulator2, slcp_prior_2)
+    proposal = prior
+    embedding_net = torch.nn.Linear(8,32)
+    neural_posterior = utils.posterior_nn(model="maf", embedding_net=embedding_net)
+    inference = SNPE(prior=prior, density_estimator=neural_posterior)
+    for j in range(num_rounds):
+        theta, x = simulate_for_sbi(simulator, proposal, num_simulations=1000, num_workers=7)
+        density_estimator = inference.append_simulations(theta, x, proposal=proposal).train()
+        posterior = inference.build_posterior(density_estimator)
+        proposal = posterior.set_default_x(ref_obs)
+
+    with open(f'auto_points_data_2/obs_{i}_posterior_proj.pkl','wb') as f:
+        pickle.dump(posterior, f)
+
+    samples = posterior.sample((10000,))
+    c2st_accuracy = c2st(samples, reference_samples)
+
+    with open('auto_points_data_2/manual_logging.txt', 'a') as f:
+        f.write(f'c2st_proj_accuracy_obs_{i} = {c2st_accuracy}\n')
+
+
+    ref_point = rand_simulator(None, ref_obs)
+    simulator, prior = prepare_for_sbi(rand_simulator, slcp_prior_2)
+    proposal = prior
+    neural_posterior = utils.posterior_nn(model="maf", embedding_net=torch.nn.Identity())
+    inference = SNPE(prior=prior, density_estimator=neural_posterior)
+    for j in range(num_rounds):
+        theta, x = simulate_for_sbi(simulator, proposal, num_simulations=1000, num_workers=7)
+        density_estimator = inference.append_simulations(theta, x, proposal=proposal).train()
+        posterior = inference.build_posterior(density_estimator)
+        proposal = posterior.set_default_x(ref_point)
+
+    with open(f'auto_points_data_2/obs_{i}_posterior_fixed.pkl','wb') as f:
+        pickle.dump(posterior, f)
+
+    samples = posterior.sample((10000,))
+    c2st_accuracy = c2st(samples, reference_samples)
+
+    with open('auto_points_data_2/manual_logging.txt', 'a') as f:
+        f.write(f'c2st_fixed_accuracy_obs_{i} = {c2st_accuracy}\n')
