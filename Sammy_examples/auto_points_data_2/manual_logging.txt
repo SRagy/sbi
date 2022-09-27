@@ -1,0 +1,2 @@
+c2st_bm_accuracy_obs_1 = tensor([0.9714])
+c2st_full_accuracy_obs_1 = tensor([0.9384])

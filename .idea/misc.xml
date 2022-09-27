@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.9 (sbi)" project-jdk-type="Python SDK" />
+  <component name="UnattendedHostPersistenceState">
+    <option name="openedFilesInfos">
+      <list>
+        <OpenedFileInfo>
+          <option name="caretOffset" value="186" />
+          <option name="fileUrl" value="file://$PROJECT_DIR$/Sammy_examples/HH_Full_Simulator.py" />
+        </OpenedFileInfo>
+        <OpenedFileInfo>
+          <option name="caretOffset" value="0" />
+          <option name="fileUrl" value="file://$PROJECT_DIR$/../sbibm/sbibm/tasks/lotka_volterra/task.py" />
+        </OpenedFileInfo>
+        <OpenedFileInfo>
+          <option name="caretOffset" value="176" />
+          <option name="fileUrl" value="file://$PROJECT_DIR$/Sammy_examples/auto_points_data_2/manual_logging.txt" />
+        </OpenedFileInfo>
+        <OpenedFileInfo>
+          <option name="caretOffset" value="6981" />
+          <option name="fileUrl" value="file://$PROJECT_DIR$/../our_ginkgo/Ginkgo_Long_Tests.py" />
+        </OpenedFileInfo>
+        <OpenedFileInfo>
+          <option name="caretOffset" value="9580" />
+          <option name="fileUrl" value="file://$PROJECT_DIR$/Sammy_examples/Auto_Points_Compare.py" />
+        </OpenedFileInfo>
+      </list>
+    </option>
+  </component>
+</project>
