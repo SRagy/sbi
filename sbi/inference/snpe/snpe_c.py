@@ -3,6 +3,7 @@
 
 
 from typing import Callable, Dict, Optional, Union
+from xmlrpc.client import Boolean
 
 import torch
 from pyknos.mdn.mdn import MultivariateGaussianMDN as mdn
@@ -100,6 +101,7 @@ class SNPE_C(PosteriorEstimator):
         resume_training: bool = False,
         force_first_round_loss: bool = False,
         discard_prior_samples: bool = False,
+        relu_loss: bool = False,
         use_combined_loss: bool = False,
         retrain_from_scratch: bool = False,
         show_train_summary: bool = False,
@@ -154,6 +156,7 @@ class SNPE_C(PosteriorEstimator):
         # to pass arguments between functions, and that's implicit state management.
         self._num_atoms = num_atoms
         self._use_combined_loss = use_combined_loss
+        self._relu_loss = relu_loss
         kwargs = del_entries(
             locals(), entries=("self", "__class__", "num_atoms", "use_combined_loss")
         )
@@ -285,7 +288,7 @@ class SNPE_C(PosteriorEstimator):
             return self._log_prob_proposal_posterior_atomic(theta, x, masks)
 
     def _log_prob_proposal_posterior_atomic(
-        self, theta: Tensor, x: Tensor, masks: Tensor
+        self, theta: Tensor, x: Tensor, masks: Tensor, relu_loss: bool = False
     ):
         """Return log probability of the proposal posterior for atomic proposals.
 
@@ -345,9 +348,14 @@ class SNPE_C(PosteriorEstimator):
         unnormalized_log_prob = log_prob_posterior - log_prob_prior
 
         # Normalize proposal posterior across discrete set of atoms.
-        log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
-            unnormalized_log_prob, dim=-1
-        )
+        if not relu_loss:
+            log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
+                unnormalized_log_prob, dim=-1
+            )
+        else:
+            log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.relu(
+                torch.logsumexp(unnormalized_log_prob, dim=-1)
+            )
         utils.assert_all_finite(log_prob_proposal_posterior, "proposal posterior eval")
 
         # XXX This evaluates the posterior on _all_ prior samples
