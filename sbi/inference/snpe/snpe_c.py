@@ -158,7 +158,14 @@ class SNPE_C(PosteriorEstimator):
         self._use_combined_loss = use_combined_loss
         self._relu_loss = relu_loss
         kwargs = del_entries(
-            locals(), entries=("self", "__class__", "num_atoms", "use_combined_loss")
+            locals(),
+            entries=(
+                "self",
+                "__class__",
+                "num_atoms",
+                "use_combined_loss",
+                "relu_loss",
+            ),
         )
 
         self._round = max(self._data_round_index)
