@@ -366,9 +366,12 @@ class SNPE_C(PosteriorEstimator):
         elif loss_function == "proportional":
             prob_prior = torch.exp(log_prob_prior)
 
-            log_prob_proposal_posterior = prob_prior[:, 0] * (
-                log_prob_posterior[:, 0] - torch.logsumexp(log_prob_posterior, dim=-1)
+            log_prob_proposal_posterior = (
+                prob_prior[:, 0] * (unnormalized_log_prob[:, 0])
+                - torch.logsumexp(log_prob_posterior, dim=-1)
+                + torch.logsumexp(log_prob_prior, dim=-1)
             )
+
         elif loss_function == "leakage_free":
             prob_prior = torch.exp(log_prob_prior)
             prob_posterior = torch.exp(log_prob_posterior)
