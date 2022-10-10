@@ -81,7 +81,7 @@ class DirectPosterior(NeuralPosterior):
         max_sampling_batch_size: int = 10_000,
         sample_with: Optional[str] = None,
         show_progress_bars: bool = True,
-        return_rejection_rate=False,
+        return_acceptance_rate=False,
     ):
         r"""Return samples from posterior distribution $p(\theta|x)$.
 
@@ -117,7 +117,7 @@ class DirectPosterior(NeuralPosterior):
             show_progress_bars=show_progress_bars,
             max_sampling_batch_size=max_sampling_batch_size,
         )
-        if return_rejection_rate:
+        if return_acceptance_rate:
             return samples, rejection_rate
         return samples
 
