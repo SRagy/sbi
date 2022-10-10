@@ -109,7 +109,7 @@ class DirectPosterior(NeuralPosterior):
                 f"`.build_posterior(sample_with={sample_with}).`"
             )
 
-        samples, rejection_rate = rejection_sample_posterior_within_prior(
+        samples, acceptance_rate = rejection_sample_posterior_within_prior(
             posterior_nn=self.posterior_estimator,
             prior=self.prior,
             x=x,
@@ -118,8 +118,9 @@ class DirectPosterior(NeuralPosterior):
             max_sampling_batch_size=max_sampling_batch_size,
         )
         if return_acceptance_rate:
-            return samples, rejection_rate
-        return samples
+            return samples, acceptance_rate
+        else:
+            return samples
 
     def log_prob(
         self,
