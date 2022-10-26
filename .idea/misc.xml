@@ -13,16 +13,32 @@
           <option name="fileUrl" value="file://$PROJECT_DIR$/../sbibm/sbibm/tasks/lotka_volterra/task.py" />
         </OpenedFileInfo>
         <OpenedFileInfo>
-          <option name="caretOffset" value="176" />
-          <option name="fileUrl" value="file://$PROJECT_DIR$/Sammy_examples/auto_points_data_2/manual_logging.txt" />
+          <option name="caretOffset" value="546" />
+          <option name="fileUrl" value="file://$PROJECT_DIR$/Sammy_examples/Run_ReLU_tests.py" />
         </OpenedFileInfo>
         <OpenedFileInfo>
-          <option name="caretOffset" value="6981" />
+          <option name="caretOffset" value="6958" />
           <option name="fileUrl" value="file://$PROJECT_DIR$/../our_ginkgo/Ginkgo_Long_Tests.py" />
         </OpenedFileInfo>
         <OpenedFileInfo>
-          <option name="caretOffset" value="9580" />
+          <option name="caretOffset" value="8001" />
+          <option name="fileUrl" value="file://$PROJECT_DIR$/../our_ginkgo/Run_SBI_example.py" />
+        </OpenedFileInfo>
+        <OpenedFileInfo>
+          <option name="caretOffset" value="4468" />
           <option name="fileUrl" value="file://$PROJECT_DIR$/Sammy_examples/Auto_Points_Compare.py" />
+        </OpenedFileInfo>
+        <OpenedFileInfo>
+          <option name="caretOffset" value="1648" />
+          <option name="fileUrl" value="file://$PROJECT_DIR$/sbi/inference/snpe/snpe_c.py" />
+        </OpenedFileInfo>
+        <OpenedFileInfo>
+          <option name="caretOffset" value="2701" />
+          <option name="fileUrl" value="file://$PROJECT_DIR$/Sammy_examples/Run_Leak_Fix_Test.py" />
+        </OpenedFileInfo>
+        <OpenedFileInfo>
+          <option name="caretOffset" value="0" />
+          <option name="fileUrl" value="file://$PROJECT_DIR$/Sammy_examples/Leak_Fix/manual_logging.txt" />
         </OpenedFileInfo>
       </list>
     </option>

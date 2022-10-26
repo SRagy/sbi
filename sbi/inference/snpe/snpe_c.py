@@ -3,6 +3,7 @@
 
 
 from typing import Callable, Dict, Optional, Union
+from xmlrpc.client import Boolean
 
 import torch
 from pyknos.mdn.mdn import MultivariateGaussianMDN as mdn
@@ -100,6 +101,7 @@ class SNPE_C(PosteriorEstimator):
         resume_training: bool = False,
         force_first_round_loss: bool = False,
         discard_prior_samples: bool = False,
+        loss_function: str = "default",
         use_combined_loss: bool = False,
         retrain_from_scratch: bool = False,
         show_train_summary: bool = False,
@@ -154,8 +156,16 @@ class SNPE_C(PosteriorEstimator):
         # to pass arguments between functions, and that's implicit state management.
         self._num_atoms = num_atoms
         self._use_combined_loss = use_combined_loss
+        self._loss_function = loss_function
         kwargs = del_entries(
-            locals(), entries=("self", "__class__", "num_atoms", "use_combined_loss")
+            locals(),
+            entries=(
+                "self",
+                "__class__",
+                "num_atoms",
+                "use_combined_loss",
+                "loss_function",
+            ),
         )
 
         self._round = max(self._data_round_index)
@@ -285,7 +295,7 @@ class SNPE_C(PosteriorEstimator):
             return self._log_prob_proposal_posterior_atomic(theta, x, masks)
 
     def _log_prob_proposal_posterior_atomic(
-        self, theta: Tensor, x: Tensor, masks: Tensor
+        self, theta: Tensor, x: Tensor, masks: Tensor, loss_function: str = "default"
     ):
         """Return log probability of the proposal posterior for atomic proposals.
 
@@ -345,9 +355,32 @@ class SNPE_C(PosteriorEstimator):
         unnormalized_log_prob = log_prob_posterior - log_prob_prior
 
         # Normalize proposal posterior across discrete set of atoms.
-        log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
-            unnormalized_log_prob, dim=-1
-        )
+        if loss_function == "default":
+            log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
+                unnormalized_log_prob, dim=-1
+            )
+        elif loss_function == "relu":
+            log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.relu(
+                torch.logsumexp(unnormalized_log_prob, dim=-1)
+            )
+        elif loss_function == "proportional":
+            prob_prior = torch.exp(log_prob_prior)
+
+            log_prob_proposal_posterior = (
+                prob_prior[:, 0] * (unnormalized_log_prob[:, 0])
+                - torch.logsumexp(log_prob_posterior, dim=-1)
+                + torch.logsumexp(log_prob_prior, dim=-1)
+            )
+
+        elif loss_function == "leakage_free":
+            prob_prior = torch.exp(log_prob_prior)
+            prob_posterior = torch.exp(log_prob_posterior)
+            log_normaliser = torch.logsumexp(-unnormalized_log_prob, dim=-1)
+
+            log_prob_proposal_posterior = (prob_prior[:, 0] / prob_posterior[:, 0]) * (
+                unnormalized_log_prob[:, 0]
+            ) - torch.exp(log_normaliser)*log_normaliser
+
         utils.assert_all_finite(log_prob_proposal_posterior, "proposal posterior eval")
 
         # XXX This evaluates the posterior on _all_ prior samples
