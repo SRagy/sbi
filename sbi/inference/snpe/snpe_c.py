@@ -375,10 +375,11 @@ class SNPE_C(PosteriorEstimator):
         elif loss_function == "leakage_free":
             prob_prior = torch.exp(log_prob_prior)
             prob_posterior = torch.exp(log_prob_posterior)
+            log_normaliser = torch.logsumexp(-unnormalized_log_prob, dim=-1)
 
             log_prob_proposal_posterior = (prob_prior[:, 0] / prob_posterior[:, 0]) * (
                 unnormalized_log_prob[:, 0]
-            ) + torch.logsumexp(-unnormalized_log_prob, dim=-1)
+            ) - torch.exp(log_normaliser)*log_normaliser
 
         utils.assert_all_finite(log_prob_proposal_posterior, "proposal posterior eval")
 
