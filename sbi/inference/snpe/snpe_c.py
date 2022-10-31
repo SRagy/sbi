@@ -372,13 +372,49 @@ class SNPE_C(PosteriorEstimator):
                 + torch.logsumexp(log_prob_prior, dim=-1)
             )
 
+        elif loss_function == "leakage_free_real":
+            post_over_prior = torch.exp(torch.logsumexp(unnormalized_log_prob, dim=-1))
+            post_over_prop = torch.exp(
+                torch.logsumexp(log_prob_posterior + torch.log(num_atoms), dim=-1)
+            )
+            log_normalisation = torch.log(num_atoms + post_over_prior - post_over_prop)
+
+            log_prob_proposal_posterior = (
+                unnormalized_log_prob[:, 0] - log_normalisation
+            )
+
         elif loss_function == "leakage_free":
             prob_prior = torch.exp(log_prob_prior)
             prob_posterior = torch.exp(log_prob_posterior)
+            log_norm = torch.logsumexp(-unnormalized_log_prob, dim=-1)
 
             log_prob_proposal_posterior = (prob_prior[:, 0] / prob_posterior[:, 0]) * (
                 unnormalized_log_prob[:, 0]
-            ) + torch.logsumexp(-unnormalized_log_prob, dim=-1)
+            ) - torch.exp(log_norm) * log_norm
+
+        elif loss_function == "leakage_free_sqd":
+            prob_prior = torch.exp(log_prob_prior)
+            prob_posterior = torch.exp(log_prob_posterior)
+            log_norm = torch.logsumexp(-(unnormalized_log_prob ** 2), dim=-1)
+
+            log_prob_proposal_posterior = (
+                2
+                * (prob_prior[:, 0] / prob_posterior[:, 0]) ** 2
+                * (unnormalized_log_prob[:, 0])
+                - torch.exp(log_norm) * log_norm
+            )
+
+        elif loss_function == "leakage_free_sqrt":
+            prob_prior = torch.exp(log_prob_prior)
+            prob_posterior = torch.exp(log_prob_posterior)
+            log_norm = torch.logsumexp(-(unnormalized_log_prob ** (1 / 2)), dim=-1)
+
+            log_prob_proposal_posterior = (
+                (1 / 2)
+                * (prob_prior[:, 0] / prob_posterior[:, 0]) ** (1 / 2)
+                * (unnormalized_log_prob[:, 0])
+                - torch.exp(log_norm) * log_norm
+            )
 
         utils.assert_all_finite(log_prob_proposal_posterior, "proposal posterior eval")
 
