@@ -317,6 +317,13 @@ class SNPE_C(PosteriorEstimator):
             Log-probability of the proposal posterior.
         """
 
+        nan_mask = torch.isnan(x)
+        # x_invalid = x[nan_mask]
+
+        theta_valid = theta[~nan_mask.any(dim=1)]
+        x_valid = x[~nan_mask.any(dim=1)]
+
+        valid_batch_size = theta_valid.size(0)
         batch_size = theta.shape[0]
 
         num_atoms = int(
@@ -325,30 +332,34 @@ class SNPE_C(PosteriorEstimator):
 
         # Each set of parameter atoms is evaluated using the same x,
         # so we repeat rows of the data x, e.g. [1, 2] -> [1, 1, 2, 2]
-        repeated_x = repeat_rows(x, num_atoms)
+        repeated_x = repeat_rows(x_valid, num_atoms)
 
         # To generate the full set of atoms for a given item in the batch,
         # we sample without replacement num_atoms - 1 times from the rest
         # of the theta in the batch.
         probs = ones(batch_size, batch_size) * (1 - eye(batch_size)) / (batch_size - 1)
+        valid_probs = probs[~nan_mask.any(dim=1)]
 
-        choices = torch.multinomial(probs, num_samples=num_atoms - 1, replacement=False)
+        choices = torch.multinomial(
+            valid_probs, num_samples=num_atoms - 1, replacement=False
+        )
         contrasting_theta = theta[choices]
 
         # We can now create our sets of atoms from the contrasting parameter sets
         # we have generated.
-        atomic_theta = torch.cat((theta[:, None, :], contrasting_theta), dim=1).reshape(
-            batch_size * num_atoms, -1
-        )
+        atomic_theta = torch.cat(
+            (theta_valid[:, None, :], contrasting_theta), dim=1
+        ).reshape(valid_batch_size * num_atoms, -1)
 
         # Evaluate large batch giving (batch_size * num_atoms) log prob posterior evals.
         log_prob_posterior = self._neural_net.log_prob(atomic_theta, repeated_x)
         utils.assert_all_finite(log_prob_posterior, "posterior eval")
-        log_prob_posterior = log_prob_posterior.reshape(batch_size, num_atoms)
+        log_prob_posterior = log_prob_posterior.reshape(valid_batch_size, num_atoms)
 
         # Get (batch_size * num_atoms) log prob prior evals.
         log_prob_prior = self._prior.log_prob(atomic_theta)
-        log_prob_prior = log_prob_prior.reshape(batch_size, num_atoms)
+        log_prob_prior = log_prob_prior.reshape(valid_batch_size, num_atoms)
+        log_prob_prior[log_prob_prior == -torch.inf] = 0
         utils.assert_all_finite(log_prob_prior, "prior eval")
 
         # Compute unnormalized proposal posterior.
@@ -370,6 +381,16 @@ class SNPE_C(PosteriorEstimator):
                 prob_prior[:, 0] * (unnormalized_log_prob[:, 0])
                 - torch.logsumexp(log_prob_posterior, dim=-1)
                 + torch.logsumexp(log_prob_prior, dim=-1)
+            )
+
+        elif loss_function == "leak_proof":
+            post_over_prior = torch.exp(torch.logsumexp(unnormalized_log_prob, dim=-1))
+            invalid_batch = theta_invalid.size(0)
+            leak_probs = torch.logsumexp()
+            log_normalisation = torch.log(post_over_prior + post_over_prop)
+
+            log_prob_proposal_posterior = (
+                unnormalized_log_prob[:, 0] - log_normalisation
             )
 
         elif loss_function == "leakage_free_real":

@@ -260,6 +260,7 @@ def rejection_sample_posterior_within_prior(
         # SNPE-style rejection-sampling when the proposal is the neural net.
         are_within_prior = within_support(prior, candidates)
         samples = candidates[are_within_prior]
+        leaky_samples = candidates[~are_within_prior]
 
         accepted.append(samples)
 
@@ -319,4 +320,4 @@ def rejection_sample_posterior_within_prior(
         samples.shape[0] == num_samples
     ), "Number of accepted samples must match required samples."
 
-    return samples, as_tensor(acceptance_rate)
+    return samples, leaky_samples, as_tensor(acceptance_rate)

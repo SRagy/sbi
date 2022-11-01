@@ -82,6 +82,7 @@ class DirectPosterior(NeuralPosterior):
         sample_with: Optional[str] = None,
         show_progress_bars: bool = True,
         return_acceptance_rate=False,
+        rejection=True,
     ):
         r"""Return samples from posterior distribution $p(\theta|x)$.
 
@@ -109,7 +110,11 @@ class DirectPosterior(NeuralPosterior):
                 f"`.build_posterior(sample_with={sample_with}).`"
             )
 
-        samples, acceptance_rate = rejection_sample_posterior_within_prior(
+        (
+            samples,
+            leaky_samples,
+            acceptance_rate,
+        ) = rejection_sample_posterior_within_prior(
             posterior_nn=self.posterior_estimator,
             prior=self.prior,
             x=x,
@@ -117,8 +122,12 @@ class DirectPosterior(NeuralPosterior):
             show_progress_bars=show_progress_bars,
             max_sampling_batch_size=max_sampling_batch_size,
         )
-        if return_acceptance_rate:
+        if return_acceptance_rate and not rejection:
+            return samples, leaky_samples, acceptance_rate
+        elif return_acceptance_rate:
             return samples, acceptance_rate
+        elif not rejection:
+            return samples, leaky_samples
         else:
             return samples
 

@@ -83,6 +83,37 @@ class PosteriorEstimator(NeuralInference, ABC):
         # Extra SNPE-specific fields summary_writer.
         self._summary.update({"rejection_sampling_acceptance_rates": []})  # type:ignore
 
+    def append_leaky_samples(
+        self, theta: Tensor, nan_x: Tensor, proposal: Optional[DirectPosterior] = None,
+    ) -> "PosteriorEstimator":
+        r"""Store proposal samples which fall outside of prior bounds for later training, the corresponding data will be a tensor of nan entries.
+
+        Data are stored as entries in lists.
+
+        Stores $\theta$, $\x$ and an index indicating which round the batch of samples came from.
+
+        Args:
+            theta: Parameter sets.
+            nan_x: Null simulations (tensors of appropriate dimension filled with NaN)
+            proposal: The distribution that the parameters $\theta$ were sampled from.
+                Pass `None` if the parameters were sampled from the prior.
+        Returns:
+            NeuralInference object (returned so that this function is chainable).
+        """
+
+        self._check_proposal(proposal)
+
+        self._theta_roundwise.append(theta)
+        self._x_roundwise.append(nan_x)
+        self._proposal_roundwise.append(proposal)
+        self._data_round_index.append(
+            max(self._data_round_index)
+        )  # This will be a repeated index.
+
+        self._prior_masks.append(mask_sims_from_prior(1, theta.size(0)))
+
+        return self
+
     def append_simulations(
         self, theta: Tensor, x: Tensor, proposal: Optional[DirectPosterior] = None,
     ) -> "PosteriorEstimator":
@@ -505,7 +536,9 @@ class PosteriorEstimator(NeuralInference, ABC):
         else:
             log_prob = self._log_prob_proposal_posterior(theta, x, masks, proposal)
 
-        return -(calibration_kernel(x) * log_prob)
+        return (
+            -log_prob
+        )  # -(calibration_kernel(x) * log_prob) should fix for leaky stuff.
 
     def _check_proposal(self, proposal):
         """

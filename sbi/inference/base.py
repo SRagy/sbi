@@ -482,6 +482,7 @@ def simulate_for_sbi(
     num_workers: int = 1,
     simulation_batch_size: int = 1,
     show_progress_bar: bool = True,
+    rejection=True,
 ) -> Tuple[Tensor, Tensor]:
     r"""Returns ($\theta, x$) pairs obtained from sampling the proposal and simulating.
 
@@ -509,12 +510,21 @@ def simulate_for_sbi(
 
     Returns: Sampled parameters $\theta$ and simulation-outputs $x$.
     """
-
-    theta = proposal.sample((num_simulations,))
+    if not rejection:
+        theta, leaky_theta = proposal.sample((num_simulations,), rejection=rejection)
+    else:
+        theta = proposal.sample((num_simulations,))
 
     x = simulate_in_batches(
         simulator, theta, simulation_batch_size, num_workers, show_progress_bar
     )
+
+    if not rejection:
+        nan_x_event_shape = x.shape[1]
+        nan_x_batch_shape = leaky_theta.shape[0]
+        nan_x = torch.empty([nan_x_batch_shape, nan_x_event_shape])
+        nan_x[:] = torch.nan
+        return theta, x, leaky_theta, nan_x
 
     return theta, x
 
