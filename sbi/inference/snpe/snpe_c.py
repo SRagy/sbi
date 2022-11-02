@@ -359,7 +359,8 @@ class SNPE_C(PosteriorEstimator):
         # Get (batch_size * num_atoms) log prob prior evals.
         log_prob_prior = self._prior.log_prob(atomic_theta)
         log_prob_prior = log_prob_prior.reshape(valid_batch_size, num_atoms)
-        log_prob_prior[log_prob_prior == -torch.inf] = 0
+        inf_mask = log_prob_prior == -torch.inf
+        log_prob_prior[inf_mask] = 0
         utils.assert_all_finite(log_prob_prior, "prior eval")
 
         # Compute unnormalized proposal posterior.
@@ -367,6 +368,27 @@ class SNPE_C(PosteriorEstimator):
 
         # Normalize proposal posterior across discrete set of atoms.
         if loss_function == "default":
+            log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
+                unnormalized_log_prob, dim=-1
+            )
+        elif loss_function == "guess":
+            unnormalized_log_prob[inf_mask] = 0
+            log_prob_posterior[~inf_mask] = 0
+            leaked_log_sum = torch.logsumexp(log_prob_posterior, dim=-1)
+            leak_normaliser = torch.log(num_atoms - torch.exp(leaked_log_sum))
+
+            log_prob_posterior = (
+                unnormalized_log_prob[:, 0]
+                - torch.logsumexp(unnormalized_log_prob, dim=-1)
+                - leak_normaliser
+            )
+
+        elif loss_function == "ten_times":
+            # unnormalized_prob = torch.exp(unnormalized_log_prob)
+            # unnormalized_prob[inf_mask] = 100 * unnormalized_prob[inf_mask]
+            # unnormalized_log_prob = torch.log(unnormalized_log_prob)
+
+            unnormalized_log_prob[inf_mask] += torch.log(num_atoms)
             log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
                 unnormalized_log_prob, dim=-1
             )

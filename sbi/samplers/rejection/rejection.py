@@ -192,6 +192,7 @@ def rejection_sample_posterior_within_prior(
     warn_acceptance: float = 0.01,
     sample_for_correction_factor: bool = False,
     max_sampling_batch_size: int = 10_000,
+    max_leaks: int = 10_000,  # Ensures that we can't overload with too much data.
     **kwargs,
 ) -> Tuple[Tensor, Tensor]:
     r"""Return samples from a posterior $p(\theta|x)$ only within the prior support.
@@ -245,7 +246,7 @@ def rejection_sample_posterior_within_prior(
     )
 
     num_sampled_total, num_remaining = 0, num_samples
-    accepted, acceptance_rate = [], float("Nan")
+    accepted, rejected, acceptance_rate = [], [], float("Nan")
     leakage_warning_raised = False
 
     # To cover cases with few samples without leakage:
@@ -262,6 +263,7 @@ def rejection_sample_posterior_within_prior(
         samples = candidates[are_within_prior]
         leaky_samples = candidates[~are_within_prior]
 
+        rejected.append(leaky_samples)
         accepted.append(samples)
 
         # Update.
@@ -316,8 +318,9 @@ def rejection_sample_posterior_within_prior(
 
     # When in case of leakage a batch size was used there could be too many samples.
     samples = torch.cat(accepted)[:num_samples]
+    leaky_samples = torch.cat(rejected)  # Consider including option to limit size.
     assert (
         samples.shape[0] == num_samples
     ), "Number of accepted samples must match required samples."
 
-    return samples, leaky_samples, as_tensor(acceptance_rate)
+    return samples, leaky_samples[:max_leaks], as_tensor(acceptance_rate)
