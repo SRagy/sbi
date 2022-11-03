@@ -317,6 +317,12 @@ class SNPE_C(PosteriorEstimator):
             Log-probability of the proposal posterior.
         """
 
+        if loss_function == 'proportional':
+            log_prob_posterior = self._neural_net.log_prob(theta, x)
+            log_prior = self._prior.log_prob(theta)
+
+            return torch.exp(log_prior)*log_prob_posterior
+
         batch_size = theta.shape[0]
 
         num_atoms = int(
@@ -366,11 +372,10 @@ class SNPE_C(PosteriorEstimator):
         elif loss_function == "proportional":
             prob_prior = torch.exp(log_prob_prior)
 
-            log_prob_proposal_posterior = (
-                prob_prior[:, 0] * (unnormalized_log_prob[:, 0])
-                - torch.logsumexp(log_prob_posterior, dim=-1)
-                + torch.logsumexp(log_prob_prior, dim=-1)
-            )
+            log_prob_proposal_posterior = prob_prior[:, 0] * (log_prob_posterior[:, 0])
+            #     - torch.logsumexp(log_prob_posterior, dim=-1)
+            #     + torch.logsumexp(log_prob_prior, dim=-1)
+            # )
 
         elif loss_function == "leakage_free_real":
             post_over_prior = torch.exp(torch.logsumexp(unnormalized_log_prob, dim=-1))
