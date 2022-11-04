@@ -295,7 +295,7 @@ class SNPE_C(PosteriorEstimator):
             return self._log_prob_proposal_posterior_atomic(theta, x, masks)
 
     def _log_prob_proposal_posterior_atomic(
-        self, theta: Tensor, x: Tensor, masks: Tensor, loss_function: str = "default"
+        self, theta: Tensor, x: Tensor, masks: Tensor
     ):
         """Return log probability of the proposal posterior for atomic proposals.
 
@@ -317,11 +317,17 @@ class SNPE_C(PosteriorEstimator):
             Log-probability of the proposal posterior.
         """
 
-        if loss_function == 'proportional':
+        loss_function = self._loss_function
+
+        if loss_function == "wrong":
+            log_prob_posterior = self._neural_net.log_prob(theta, x)
+            return log_prob_posterior
+
+        if loss_function == "proportional":  # Also wrong!
             log_prob_posterior = self._neural_net.log_prob(theta, x)
             log_prior = self._prior.log_prob(theta)
 
-            return torch.exp(log_prior)*log_prob_posterior
+            return torch.exp(log_prior) * log_prob_posterior
 
         batch_size = theta.shape[0]
 
