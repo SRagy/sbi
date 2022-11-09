@@ -103,6 +103,7 @@ class SNPE_C(PosteriorEstimator):
         discard_prior_samples: bool = False,
         loss_function: str = "default",
         use_combined_loss: bool = False,
+        num_norm_samples: int = 20,
         retrain_from_scratch: bool = False,
         show_train_summary: bool = False,
         dataloader_kwargs: Optional[Dict] = None,
@@ -155,6 +156,7 @@ class SNPE_C(PosteriorEstimator):
         # continue. It's sneaky because we are using the object (self) as a namespace
         # to pass arguments between functions, and that's implicit state management.
         self._num_atoms = num_atoms
+        self._num_norm_samples = num_norm_samples
         self._use_combined_loss = use_combined_loss
         self._loss_function = loss_function
         kwargs = del_entries(
@@ -165,6 +167,7 @@ class SNPE_C(PosteriorEstimator):
                 "num_atoms",
                 "use_combined_loss",
                 "loss_function",
+                "num_norm_samples",
             ),
         )
 
@@ -318,6 +321,7 @@ class SNPE_C(PosteriorEstimator):
         """
 
         loss_function = self._loss_function
+        num_norm_samples = self._num_norm_samples
 
         if loss_function == "wrong":
             log_prob_posterior = self._neural_net.log_prob(theta, x)
@@ -371,6 +375,80 @@ class SNPE_C(PosteriorEstimator):
             log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
                 unnormalized_log_prob, dim=-1
             )
+        elif loss_function == "default_unnorm":
+            log_prob_proposal_posterior = unnormalized_log_prob[:, 0]
+
+        elif loss_function == "default_indicator":
+            extra_samples = self._neural_net.sample(
+                num_norm_samples, context=x
+            ).reshape(batch_size * num_norm_samples, -1).detach() 
+
+            extra_log_prior = self._prior.log_prob(extra_samples)
+            discard_mask = extra_log_prior == -torch.inf
+
+            repeated_x = repeat_rows(x, num_norm_samples)
+            extra_log_posterior = self._neural_net.log_prob(extra_samples, repeated_x)
+
+            denominator = extra_log_posterior
+            numerator = denominator
+            numerator[discard_mask] = -torch.inf
+
+            leak_normaliser = torch.logsumexp(numerator, dim=-1) - torch.logsumexp(
+                denominator, dim=-1
+            )
+
+            log_prob_proposal_posterior = (
+                unnormalized_log_prob[:, 0]
+                - torch.logsumexp(unnormalized_log_prob, dim=-1)
+                + leak_normaliser
+            )
+
+        elif loss_function == "full":
+            # leak_normaliser = torch.logsumexp(
+            #     log_prob_posterior[:, 0], dim=-1
+            # ) - torch.log(torch.tensor(batch_size))
+
+            leak_normaliser = torch.logsumexp(
+                log_prob_posterior.reshape(-1), dim=-1
+            ) - torch.log(torch.tensor(batch_size))
+
+            log_prob_proposal_posterior = (
+                unnormalized_log_prob[:, 0]
+                - torch.logsumexp(unnormalized_log_prob, dim=-1)
+                + leak_normaliser
+            )
+
+        elif loss_function == "default_no_leak":
+            extra_samples = (
+                self._neural_net.sample(num_norm_samples, context=x)
+                .reshape(batch_size * num_norm_samples, -1)
+                .detach()
+            )
+            ## Will need to replace with a within_support check later:
+            extra_log_prior = self._prior.log_prob(extra_samples)
+            keep_mask = extra_log_prior == -torch.inf
+
+            extra_log_posterior = torch.empty(batch_size * num_norm_samples)
+            extra_log_posterior[~keep_mask] = -torch.inf
+
+            repeated_x = repeat_rows(x, num_norm_samples)
+            keep_x = repeated_x[keep_mask]
+            keep_extra = extra_samples[keep_mask]
+            extra_log_probs = self._neural_net.log_prob(keep_extra, keep_x).reshape(-1)
+
+            extra_log_posterior[keep_mask] = extra_log_probs
+            extra_log_posterior = extra_log_posterior.reshape(
+                batch_size, num_norm_samples
+            )
+
+            unnormalized_log_prob = torch.cat(
+                [unnormalized_log_prob, extra_log_posterior], dim=1
+            )
+
+            log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
+                unnormalized_log_prob, dim=-1
+            )
+
         elif loss_function == "relu":
             log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.relu(
                 torch.logsumexp(unnormalized_log_prob, dim=-1)
