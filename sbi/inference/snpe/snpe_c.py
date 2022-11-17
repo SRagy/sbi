@@ -108,6 +108,7 @@ class SNPE_C(PosteriorEstimator):
         retrain_from_scratch: bool = False,
         show_train_summary: bool = False,
         dataloader_kwargs: Optional[Dict] = None,
+        leak_correction_frequency = 0.1,
     ) -> nn.Module:
         r"""Return density estimator that approximates the distribution $p(\theta|x)$.
 
@@ -160,6 +161,7 @@ class SNPE_C(PosteriorEstimator):
         self._num_norm_samples = num_norm_samples
         self._use_combined_loss = use_combined_loss
         self._loss_function = loss_function
+        self._correction_frequency = leak_correction_frequency
         self.it = 0
         self.previous_net = deepcopy(self._neural_net)
         kwargs = del_entries(
@@ -171,6 +173,7 @@ class SNPE_C(PosteriorEstimator):
                 "use_combined_loss",
                 "loss_function",
                 "num_norm_samples",
+                "leak_correction_frequency"
             ),
         )
 
@@ -451,12 +454,13 @@ class SNPE_C(PosteriorEstimator):
 
         elif loss_function == "switch":
             self.it+=1
-            if self.it%10:
+            correction_rounds = int(1/self._correction_frequency)
+            if self.it%correction_rounds:
                 log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
                     unnormalized_log_prob, dim=-1
                 )
             else:
-                extra_samples = self._neural_net.sample(
+                extra_samples = self.previous_net.sample(
                     num_norm_samples, context=x
                 ).reshape(batch_size * num_norm_samples, -1).detach()
 
@@ -465,9 +469,13 @@ class SNPE_C(PosteriorEstimator):
                 repeated_x = repeat_rows(x, num_norm_samples)
                 extra_log_posterior = self._neural_net.log_prob(extra_samples, repeated_x)
 
-                leak_normalizer = extra_log_posterior[keep_mask]
+                keep_mask = keep_mask.reshape(batch_size, num_norm_samples)
+                extra_log_posterior = extra_log_posterior.reshape(batch_size, num_norm_samples)
+                extra_log_posterior[~keep_mask] = 0
 
-                log_prob_proposal_posterior = leak_normalizer
+                leak_normaliser = torch.mean(extra_log_posterior, dim=1)
+
+                log_prob_proposal_posterior = leak_normaliser
 
 
 
