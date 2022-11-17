@@ -27,8 +27,8 @@ for i in range(1, 11):
     for j in range(num_rounds):
         theta, x = simulate_for_sbi(simulator, proposal, num_simulations=1000)
         if j > 1:
-            density_estimator = inference.train(loss_function='correction', num_norm_samples=1, training_batch_size=200,
-                                                stop_after_epochs=40)
+            density_estimator = inference.train(loss_function='correction', num_norm_samples=5, training_batch_size=100,
+                                                stop_after_epochs=50)
         density_estimator = inference.append_simulations(theta, x, proposal=proposal).train(loss_function='default',
                                                                                             num_norm_samples=1)
         posterior = inference.build_posterior(density_estimator)

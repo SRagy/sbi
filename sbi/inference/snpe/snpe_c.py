@@ -338,9 +338,15 @@ class SNPE_C(PosteriorEstimator):
             repeated_x = repeat_rows(x, num_norm_samples)
             extra_log_posterior = self._neural_net.log_prob(extra_samples, repeated_x)
 
-            leak_normalizer = extra_log_posterior[keep_mask]
+            keep_mask = keep_mask.reshape(batch_size, num_norm_samples)
+            descending_row = torch.arange(num_norm_samples, 0, -1)
+            # Kind of tricky - largest index will correspond to first kept item.
+            first_keep_index = torch.argmax(descending_row * keep_mask, 1, keepdim=True)
+            no_keeps = keep_mask.any(dim=1) # In case all false, throws away whole row.
+            extra_log_posterior = extra_log_posterior.reshape(batch_size, num_norm_samples)
+            leak_normalizer = extra_log_posterior.gather(1, first_keep_index)
 
-            log_prob_proposal_posterior = leak_normalizer
+            log_prob_proposal_posterior = leak_normalizer[no_keeps]
 
             return log_prob_proposal_posterior
 
@@ -401,18 +407,24 @@ class SNPE_C(PosteriorEstimator):
                 unnormalized_log_prob, dim=-1
             )
 
-            extra_samples = self._neural_net.sample(
+            extra_samples = self.previous_net.sample(
                 num_norm_samples, context=x
-            ).reshape(batch_size * num_norm_samples, -1).detach() # try not detaching?
+            ).reshape(batch_size * num_norm_samples, -1).detach()
 
             extra_log_prior = self._prior.log_prob(extra_samples)
             keep_mask = ~(extra_log_prior == -torch.inf)
             repeated_x = repeat_rows(x, num_norm_samples)
             extra_log_posterior = self._neural_net.log_prob(extra_samples, repeated_x)
 
-            leak_normalizer = torch.mean(extra_log_posterior[keep_mask])
+            keep_mask = keep_mask.reshape(batch_size, num_norm_samples)
+            descending_row = torch.arange(num_norm_samples, 0, -1)
+            # Kind of tricky - largest index will correspond to first kept item.
+            first_keep_index = torch.argmax(descending_row * keep_mask, 1, keepdim=True)
+            no_keeps = keep_mask.any(dim=1) # In case all false, throws away whole row.
+            extra_log_posterior = extra_log_posterior.reshape(batch_size, num_norm_samples)
+            leak_normalizer = extra_log_posterior.gather(1, first_keep_index)
 
-            log_prob_proposal_posterior += 0.1*leak_normalizer
+            log_prob_proposal_posterior += 0.3*torch.mean(leak_normalizer[no_keeps])
 
         elif loss_function == "switch":
             if self.it%10:
