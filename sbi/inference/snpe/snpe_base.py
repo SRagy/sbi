@@ -505,7 +505,7 @@ class PosteriorEstimator(NeuralInference, ABC):
         else:
             log_prob = self._log_prob_proposal_posterior(theta, x, masks, proposal)
 
-        return -(calibration_kernel(x) * log_prob)
+        return -log_prob #-(calibration_kernel(x) * log_prob)
 
     def _check_proposal(self, proposal):
         """

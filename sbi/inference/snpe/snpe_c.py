@@ -25,6 +25,7 @@ from sbi.utils import (
 )
 
 from sbi.utils.torchutils import BoxUniform
+from copy import deepcopy
 
 
 class SNPE_C(PosteriorEstimator):
@@ -159,6 +160,8 @@ class SNPE_C(PosteriorEstimator):
         self._num_norm_samples = num_norm_samples
         self._use_combined_loss = use_combined_loss
         self._loss_function = loss_function
+        self.it = 0
+        self.previous_net = deepcopy(self._neural_net)
         kwargs = del_entries(
             locals(),
             entries=(
@@ -322,6 +325,24 @@ class SNPE_C(PosteriorEstimator):
 
         loss_function = self._loss_function
         num_norm_samples = self._num_norm_samples
+        batch_size = theta.shape[0]
+
+
+        if loss_function == "correction":
+            extra_samples = self.previous_net.sample(
+                num_norm_samples, context=x
+            ).reshape(batch_size * num_norm_samples, -1).detach()
+
+            extra_log_prior = self._prior.log_prob(extra_samples)
+            keep_mask = ~(extra_log_prior == -torch.inf)
+            repeated_x = repeat_rows(x, num_norm_samples)
+            extra_log_posterior = self._neural_net.log_prob(extra_samples, repeated_x)
+
+            leak_normalizer = extra_log_posterior[keep_mask]
+
+            log_prob_proposal_posterior = leak_normalizer
+
+            return log_prob_proposal_posterior
 
         if loss_function == "wrong":
             log_prob_posterior = self._neural_net.log_prob(theta, x)
@@ -333,7 +354,6 @@ class SNPE_C(PosteriorEstimator):
 
             return torch.exp(log_prior) * log_prob_posterior
 
-        batch_size = theta.shape[0]
 
         num_atoms = int(
             clamp_and_warn("num_atoms", self._num_atoms, min_val=2, max_val=batch_size)
@@ -375,6 +395,46 @@ class SNPE_C(PosteriorEstimator):
             log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
                 unnormalized_log_prob, dim=-1
             )
+        elif loss_function == "weighted":
+
+            log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
+                unnormalized_log_prob, dim=-1
+            )
+
+            extra_samples = self._neural_net.sample(
+                num_norm_samples, context=x
+            ).reshape(batch_size * num_norm_samples, -1).detach() # try not detaching?
+
+            extra_log_prior = self._prior.log_prob(extra_samples)
+            keep_mask = ~(extra_log_prior == -torch.inf)
+            repeated_x = repeat_rows(x, num_norm_samples)
+            extra_log_posterior = self._neural_net.log_prob(extra_samples, repeated_x)
+
+            leak_normalizer = torch.mean(extra_log_posterior[keep_mask])
+
+            log_prob_proposal_posterior += 0.1*leak_normalizer
+
+        elif loss_function == "switch":
+            if self.it%10:
+                log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
+                    unnormalized_log_prob, dim=-1
+                )
+            else:
+                extra_samples = self._neural_net.sample(
+                    num_norm_samples, context=x
+                ).reshape(batch_size * num_norm_samples, -1).detach()
+
+                extra_log_prior = self._prior.log_prob(extra_samples)
+                keep_mask = ~(extra_log_prior == -torch.inf)
+                repeated_x = repeat_rows(x, num_norm_samples)
+                extra_log_posterior = self._neural_net.log_prob(extra_samples, repeated_x)
+
+                leak_normalizer = extra_log_posterior[keep_mask]
+
+                log_prob_proposal_posterior = leak_normalizer
+
+
+
         elif loss_function == "default_unnorm":
             log_prob_proposal_posterior = unnormalized_log_prob[:, 0]
 
@@ -396,6 +456,8 @@ class SNPE_C(PosteriorEstimator):
             leak_normaliser = torch.logsumexp(numerator, dim=-1) - torch.logsumexp(
                 denominator, dim=-1
             )
+
+            leak_normaliser[leak_normaliser == -torch.inf] = -100 #change later
 
             log_prob_proposal_posterior = (
                 unnormalized_log_prob[:, 0]
