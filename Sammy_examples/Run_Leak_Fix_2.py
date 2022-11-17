@@ -26,11 +26,15 @@ for i in range(1, 11):
     inference = SNPE(prior=prior)
     for j in range(num_rounds):
         theta, x = simulate_for_sbi(simulator, proposal, num_simulations=1000)
-        if j > 1:
-            density_estimator = inference.train(loss_function='correction', num_norm_samples=5, training_batch_size=100,
-                                                stop_after_epochs=50)
-        density_estimator = inference.append_simulations(theta, x, proposal=proposal).train(loss_function='default',
-                                                                                            num_norm_samples=1)
+        inference.append_simulations(theta, x, proposal=proposal)
+        if j <=1:
+            density_estimator = inference.train()
+        else:
+            for _ in range(5):
+                density_estimator = inference.train(loss_function='correction', num_norm_samples=5, training_batch_size=100,
+                                                    stop_after_epochs=15, max_num_epochs=15)
+                density_estimator = inference.train(loss_function='default', num_norm_samples=1, stop_after_epochs=15,
+                                                    max_num_epochs=15)
         posterior = inference.build_posterior(density_estimator)
         proposal = posterior.set_default_x(ref_obs)
 
@@ -40,5 +44,5 @@ for i in range(1, 11):
     c2st_accuracy = c2st(samples, reference_samples)
 
     with open('Leak_Fix/manual_logging.txt', 'a') as f:
-        f.write(f'c2st_fix2_accuracy_obs_{i} = {c2st_accuracy}, time_taken = {time_taken}, acceptance_rate = {acceptance_rate}\n')
+        f.write(f'c2st_fix3_accuracy_obs_{i} = {c2st_accuracy}, time_taken = {time_taken}, acceptance_rate = {acceptance_rate}\n')
 

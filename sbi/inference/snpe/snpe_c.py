@@ -424,9 +424,33 @@ class SNPE_C(PosteriorEstimator):
             extra_log_posterior = extra_log_posterior.reshape(batch_size, num_norm_samples)
             leak_normalizer = extra_log_posterior.gather(1, first_keep_index)
 
-            log_prob_proposal_posterior += 0.3*torch.mean(leak_normalizer[no_keeps])
+            log_prob_proposal_posterior += 0.2*torch.mean(leak_normalizer[no_keeps])
+        elif loss_function == "weighted_keep":
+
+            log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
+                unnormalized_log_prob, dim=-1
+            )
+
+            extra_samples = self.previous_net.sample(
+                num_norm_samples, context=x
+            ).reshape(batch_size * num_norm_samples, -1).detach()
+
+            extra_log_prior = self._prior.log_prob(extra_samples)
+            keep_mask = ~(extra_log_prior == -torch.inf)
+            repeated_x = repeat_rows(x, num_norm_samples)
+            extra_log_posterior = self._neural_net.log_prob(extra_samples, repeated_x)
+
+            keep_mask = keep_mask.reshape(batch_size, num_norm_samples)
+            extra_log_posterior = extra_log_posterior.reshape(batch_size, num_norm_samples)
+            extra_log_posterior[~keep_mask] = 0
+
+            leak_normaliser = torch.mean(extra_log_posterior, dim=1)
+
+            log_prob_proposal_posterior += 0.2*leak_normaliser
+
 
         elif loss_function == "switch":
+            self.it+=1
             if self.it%10:
                 log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
                     unnormalized_log_prob, dim=-1
