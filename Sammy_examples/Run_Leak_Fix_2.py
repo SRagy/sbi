@@ -17,32 +17,33 @@ slcp_prior_2 = slcp2.get_prior_dist()
 num_rounds = 10
 simulator, prior = prepare_for_sbi(slcp_simulator2, slcp_prior_2)
 acc_list = []
-for i in range(1, 11):
+for i in range(4, 11):
     reference_samples = slcp2.get_reference_posterior_samples(num_observation=i)
     ref_obs = slcp2.get_observation(num_observation=i)
     simulator, prior = prepare_for_sbi(slcp_simulator2, slcp_prior_2)
     proposal = prior
     start_time = time.time()
     inference = SNPE(prior=prior)
+    acceptance_rate = 1
     for j in range(num_rounds):
         theta, x = simulate_for_sbi(simulator, proposal, num_simulations=1000)
-        inference.append_simulations(theta, x, proposal=proposal)
-        if j <=1:
-            density_estimator = inference.train()
+        if acceptance_rate < 0.01:
+            correction_frequency = 1
+            num_norm_samples = 20
         else:
-            for _ in range(5):
-                density_estimator = inference.train(loss_function='correction', num_norm_samples=5, training_batch_size=100,
-                                                    stop_after_epochs=15, max_num_epochs=15)
-                density_estimator = inference.train(loss_function='default', num_norm_samples=1, stop_after_epochs=15,
-                                                    max_num_epochs=15)
+            correction_frequency = 0.1
+            num_norm_samples = 5
+        density_estimator = inference.append_simulations(theta, x, proposal=proposal).train(loss_function='weighted',
+                                                                                            num_norm_samples=num_norm_samples,
+                                                                                            stop_after_epochs=20,
+                                                                                            leak_correction_frequency=correction_frequency)
         posterior = inference.build_posterior(density_estimator)
         proposal = posterior.set_default_x(ref_obs)
+        samples, acceptance_rate = posterior.sample((10000,), return_acceptance_rate=True)
 
     time_taken = time.time() - start_time
-
-    samples, acceptance_rate = posterior.sample((10000,), return_acceptance_rate=True)
     c2st_accuracy = c2st(samples, reference_samples)
 
     with open('Leak_Fix/manual_logging.txt', 'a') as f:
-        f.write(f'c2st_fix3_accuracy_obs_{i} = {c2st_accuracy}, time_taken = {time_taken}, acceptance_rate = {acceptance_rate}\n')
+        f.write(f'weighted_attached_obs_{i} = {c2st_accuracy}, time_taken = {time_taken}, acceptance_rate = {acceptance_rate}\n')
 

@@ -412,7 +412,7 @@ class SNPE_C(PosteriorEstimator):
 
             extra_samples = self.previous_net.sample(
                 num_norm_samples, context=x
-            ).reshape(batch_size * num_norm_samples, -1).detach() #detach vs not?
+            ).reshape(batch_size * num_norm_samples, -1) #detach vs not?
 
             extra_log_prior = self._prior.log_prob(extra_samples)
             keep_mask = ~(extra_log_prior == -torch.inf)
@@ -425,7 +425,7 @@ class SNPE_C(PosteriorEstimator):
 
             leak_normaliser = torch.mean(extra_log_posterior, dim=1)
 
-            log_prob_proposal_posterior += 0.2*leak_normaliser
+            log_prob_proposal_posterior += self._correction_frequency*leak_normaliser
 
         elif loss_function == "weighted_keep":
 
@@ -476,6 +476,34 @@ class SNPE_C(PosteriorEstimator):
 
                 log_prob_proposal_posterior = leak_normaliser
 
+        elif loss_function == "hybrid":
+            self.it+=1
+            correction_rounds = int(1/self._correction_frequency)
+            if self.it%correction_rounds:
+                log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
+                    unnormalized_log_prob, dim=-1
+                )
+            else:
+                extra_samples = self.previous_net.sample(
+                    num_norm_samples, context=x
+                ).reshape(batch_size * num_norm_samples, -1).detach()
+
+                extra_log_prior = self._prior.log_prob(extra_samples)
+                keep_mask = ~(extra_log_prior == -torch.inf)
+                repeated_x = repeat_rows(x, num_norm_samples)
+                extra_log_posterior = self._neural_net.log_prob(extra_samples, repeated_x)
+
+                keep_mask = keep_mask.reshape(batch_size, num_norm_samples)
+                extra_log_posterior = extra_log_posterior.reshape(batch_size, num_norm_samples)
+                extra_log_posterior[~keep_mask] = 0
+
+                leak_normaliser = torch.mean(extra_log_posterior, dim=1)
+
+                log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
+                    unnormalized_log_prob, dim=-1
+                )
+
+                log_prob_proposal_posterior += leak_normaliser
 
 
         elif loss_function == "default_unnorm":
