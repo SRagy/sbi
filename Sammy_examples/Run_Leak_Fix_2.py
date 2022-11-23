@@ -17,7 +17,7 @@ slcp_prior_2 = slcp2.get_prior_dist()
 num_rounds = 10
 simulator, prior = prepare_for_sbi(slcp_simulator2, slcp_prior_2)
 acc_list = []
-for i in range(4, 11):
+for i in range(1, 11):
     reference_samples = slcp2.get_reference_posterior_samples(num_observation=i)
     ref_obs = slcp2.get_observation(num_observation=i)
     simulator, prior = prepare_for_sbi(slcp_simulator2, slcp_prior_2)
@@ -33,7 +33,7 @@ for i in range(4, 11):
         else:
             correction_frequency = 0.1
             num_norm_samples = 5
-        density_estimator = inference.append_simulations(theta, x, proposal=proposal).train(loss_function='weighted',
+        density_estimator = inference.append_simulations(theta, x, proposal=proposal).train(loss_function='automatic',
                                                                                             num_norm_samples=num_norm_samples,
                                                                                             stop_after_epochs=20,
                                                                                             leak_correction_frequency=correction_frequency)
@@ -45,5 +45,5 @@ for i in range(4, 11):
     c2st_accuracy = c2st(samples, reference_samples)
 
     with open('Leak_Fix/manual_logging.txt', 'a') as f:
-        f.write(f'weighted_attached_obs_{i} = {c2st_accuracy}, time_taken = {time_taken}, acceptance_rate = {acceptance_rate}\n')
+        f.write(f'hybrid_obs_{i} = {c2st_accuracy}, time_taken = {time_taken}, acceptance_rate = {acceptance_rate}\n')
 
