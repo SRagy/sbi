@@ -165,6 +165,7 @@ class SNPE_C(PosteriorEstimator):
         self._loss_function = loss_function
         self._correction_frequency = leak_correction_frequency
         self.it = 0
+        self._current_epoch = 0
         self.previous_net = deepcopy(self._neural_net)
         kwargs = del_entries(
             locals(),
@@ -431,20 +432,21 @@ class SNPE_C(PosteriorEstimator):
 
         elif loss_function == "automatic":
 
-            if self.epoch > 0 and self.epoch % 10 == 0:
+            if self.epoch != self._current_epoch and self.epoch % 10 == 0: # first part ensures we only calculate once per epoch
+                self._current_epoch = self.epoch
                 _, acceptance_rate = rejection_sample_posterior_within_prior(
                     self._neural_net,
-                    prior=self.prior,
+                    prior=self._prior,
                     x=self._proposal_roundwise[-1].default_x,
                     num_samples=1000
                 )
 
-            if acceptance_rate > 0.05:
-                self._correction_frequency = 0.1
-            else:
-                self._correction_frequency = 1
+                if acceptance_rate > 0.05:
+                    self._correction_frequency = 0.1
+                else:
+                    self._correction_frequency = 1
 
-            self._num_norm_samples = int(1 / acceptance_rate)
+                self._num_norm_samples = int(1 / acceptance_rate)
 
 
             self.it+=1
