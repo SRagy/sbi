@@ -440,14 +440,17 @@ class SNPE_C(PosteriorEstimator):
                     x=self._proposal_roundwise[-1].default_x,
                     num_samples=1000
                 )
-
+                if acceptance_rate > 0.2:
+                    self._correction_frequency = 0.001
                 if acceptance_rate > 0.05:
                     self._correction_frequency = 0.1
+                    self._num_norm_samples = 5
+                elif acceptance_rate > 0.01:
+                    self._correction_frequency = 0.2
+                    self._num_norm_samples = 10
                 else:
                     self._correction_frequency = 1
-
-                self._num_norm_samples = int(1 / acceptance_rate)
-
+                    self._num_norm_samples = int(1 / acceptance_rate)
 
             self.it+=1
             correction_rounds = int(1/self._correction_frequency)
@@ -458,7 +461,7 @@ class SNPE_C(PosteriorEstimator):
             else:
                 extra_samples = self.previous_net.sample(
                     num_norm_samples, context=x
-                ).reshape(batch_size * num_norm_samples, -1).detach()
+                ).reshape(batch_size * num_norm_samples, -1)
 
                 extra_log_prior = self._prior.log_prob(extra_samples)
                 keep_mask = ~(extra_log_prior == -torch.inf)
@@ -475,7 +478,69 @@ class SNPE_C(PosteriorEstimator):
                     unnormalized_log_prob, dim=-1
                 )
 
-                log_prob_proposal_posterior += leak_normaliser
+                if self._correction_frequency == 1:
+                    log_prob_proposal_posterior += 3*leak_normaliser
+                else:
+                    log_prob_proposal_posterior += leak_normaliser
+                # if acceptance_rate < 0.01:
+                #     log_prob_proposal_posterior += 2*leak_normaliser
+                # else:
+                #     log_prob_proposal_posterior += leak_normaliser
+
+        elif loss_function == "automatic_correct":
+
+            if self.epoch != self._current_epoch and self.epoch % 10 == 0: # first part ensures we only calculate once per epoch
+                self._current_epoch = self.epoch
+                _, acceptance_rate = rejection_sample_posterior_within_prior(
+                    self._neural_net,
+                    prior=self._prior,
+                    x=self._proposal_roundwise[-1].default_x,
+                    num_samples=1000
+                )
+                if acceptance_rate > 0.2:
+                    self._correction_frequency = 0.001
+                if acceptance_rate > 0.05:
+                    self._correction_frequency = 0.1
+                    self._num_norm_samples = 5
+                elif acceptance_rate > 0.01:
+                    self._correction_frequency = 0.2
+                    self._num_norm_samples = 10
+                else:
+                    self.previous_net = deepcopy(self._neural_net)
+                    self._correction_frequency = 1
+                    self._num_norm_samples = int(1 / acceptance_rate)
+
+            self.it+=1
+            correction_rounds = int(1/self._correction_frequency)
+            if self.it%correction_rounds:
+                log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
+                    unnormalized_log_prob, dim=-1
+                )
+            else:
+                extra_samples = self.previous_net.sample(
+                    num_norm_samples, context=x
+                ).reshape(batch_size * num_norm_samples, -1)
+
+                extra_log_prior = self._prior.log_prob(extra_samples)
+                keep_mask = ~(extra_log_prior == -torch.inf)
+                repeated_x = repeat_rows(x, num_norm_samples)
+                extra_log_posterior = self._neural_net.log_prob(extra_samples, repeated_x)
+
+                keep_mask = keep_mask.reshape(batch_size, num_norm_samples)
+                extra_log_posterior = extra_log_posterior.reshape(batch_size, num_norm_samples)
+                extra_log_posterior[~keep_mask] = 0
+
+                leak_normaliser = torch.mean(extra_log_posterior, dim=1)
+
+                log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
+                    unnormalized_log_prob, dim=-1
+                )
+
+                if self._correction_frequency == 1:
+                    log_prob_proposal_posterior += 3*leak_normaliser
+                else:
+                    log_prob_proposal_posterior += leak_normaliser
+
 
         elif loss_function == "weighted_keep":
 
@@ -536,7 +601,7 @@ class SNPE_C(PosteriorEstimator):
             else:
                 extra_samples = self.previous_net.sample(
                     num_norm_samples, context=x
-                ).reshape(batch_size * num_norm_samples, -1).detach()
+                ).reshape(batch_size * num_norm_samples, -1)
 
                 extra_log_prior = self._prior.log_prob(extra_samples)
                 keep_mask = ~(extra_log_prior == -torch.inf)
