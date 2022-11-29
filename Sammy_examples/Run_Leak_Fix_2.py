@@ -31,16 +31,16 @@ for i in range(1, 11):
     for j in range(num_rounds):
         print(f"round {j}, prev_accept = {acceptance_rate}")
         theta, x = simulate_for_sbi(simulator, proposal, num_simulations=1000)
-        # if acceptance_rate < 0.01:
-        #     num_norm_samples = 20
-        #     leak_correction_frequency = 1
-        # else:
-        #     num_norm_samples = 5
-        #     leak_correction_frequency = 0.1
-        density_estimator = inference.append_simulations(theta, x, proposal=proposal).train(loss_function='automatic',
-                                                                                            num_norm_samples=5,
+        if acceptance_rate < 0.01:
+            num_norm_samples = 20
+            leak_correction_frequency = 1
+        else:
+            num_norm_samples = 5
+            leak_correction_frequency = 0.1
+        density_estimator = inference.append_simulations(theta, x, proposal=proposal).train(loss_function='weighted',
+                                                                                            num_norm_samples=num_norm_samples,
                                                                                             stop_after_epochs=20,
-                                                                                            leak_correction_frequency=0.001)
+                                                                                            leak_correction_frequency=leak_correction_frequency)
         posterior = inference.build_posterior(density_estimator)
         proposal = posterior.set_default_x(ref_obs)
         samples, acceptance_rate = posterior.sample((10000,), return_acceptance_rate=True)
@@ -56,5 +56,5 @@ for i in range(1, 11):
     c2st_accuracy = c2st(samples, reference_samples)
 
     with open('Leak_Fix/manual_logging.txt', 'a') as f:
-        f.write(f'automatic_attached_obs_{i} = {c2st_accuracy}, time_taken = {time_taken}, acceptance_rate = {acceptance_rate}\n')
+        f.write(f'weighted_attached_fix_{i} = {c2st_accuracy}, time_taken = {time_taken}, acceptance_rate = {acceptance_rate}\n')
 

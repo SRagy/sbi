@@ -413,7 +413,7 @@ class SNPE_C(PosteriorEstimator):
                 unnormalized_log_prob, dim=-1
             )
 
-            extra_samples = self.previous_net.sample(
+            extra_samples = self._neural_net.sample(
                 num_norm_samples, context=x
             ).reshape(batch_size * num_norm_samples, -1) #detach vs not?
 
@@ -443,11 +443,11 @@ class SNPE_C(PosteriorEstimator):
                 if acceptance_rate > 0.2:
                     self._correction_frequency = 0.001
                 if acceptance_rate > 0.05:
-                    self._correction_frequency = 0.1
-                    self._num_norm_samples = 5
-                elif acceptance_rate > 0.01:
                     self._correction_frequency = 0.2
-                    self._num_norm_samples = 10
+                    self._num_norm_samples = 20
+                elif acceptance_rate > 0.01:
+                    self._correction_frequency = 0.5
+                    self._num_norm_samples = 50
                 else:
                     self._correction_frequency = 1
                     self._num_norm_samples = int(1 / acceptance_rate)
@@ -459,9 +459,9 @@ class SNPE_C(PosteriorEstimator):
                     unnormalized_log_prob, dim=-1
                 )
             else:
-                extra_samples = self.previous_net.sample(
+                extra_samples = self._neural_net.sample(
                     num_norm_samples, context=x
-                ).reshape(batch_size * num_norm_samples, -1)
+                ).reshape(batch_size * num_norm_samples, -1).detach()
 
                 extra_log_prior = self._prior.log_prob(extra_samples)
                 keep_mask = ~(extra_log_prior == -torch.inf)
@@ -506,7 +506,7 @@ class SNPE_C(PosteriorEstimator):
                     self._correction_frequency = 0.2
                     self._num_norm_samples = 10
                 else:
-                    self.previous_net = deepcopy(self._neural_net)
+                    # self.previous_net = deepcopy(self._neural_net)
                     self._correction_frequency = 1
                     self._num_norm_samples = int(1 / acceptance_rate)
 
@@ -517,7 +517,7 @@ class SNPE_C(PosteriorEstimator):
                     unnormalized_log_prob, dim=-1
                 )
             else:
-                extra_samples = self.previous_net.sample(
+                extra_samples = self._neural_net.sample(
                     num_norm_samples, context=x
                 ).reshape(batch_size * num_norm_samples, -1)
 
