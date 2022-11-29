@@ -90,6 +90,8 @@ target/
 # IDEs (VSCode, etc.)
 .env
 *.code-workspace
+.idea/other.xml
+.idea/workspace.xml
 
 # Class diagram
 *.pyns
