@@ -31,13 +31,15 @@ for i in range(1, 11):
     for j in range(num_rounds):
         print(f"round {j}, prev_accept = {acceptance_rate}")
         theta, x = simulate_for_sbi(simulator, proposal, num_simulations=1000)
-        if acceptance_rate < 0.01:
-            num_norm_samples = 20
-            leak_correction_frequency = 1
-        else:
-            num_norm_samples = 5
-            leak_correction_frequency = 0.1
-        density_estimator = inference.append_simulations(theta, x, proposal=proposal).train(loss_function='weighted',
+        # if acceptance_rate < 0.01:
+        #     num_norm_samples = 20
+        #     leak_correction_frequency = 1
+        # else:
+        #     num_norm_samples = 5
+        #     leak_correction_frequency = 0.1
+        num_norm_samples = 10
+        leak_correction_frequency = 1
+        density_estimator = inference.append_simulations(theta, x, proposal=proposal).train(loss_function='inclusive',
                                                                                             num_norm_samples=num_norm_samples,
                                                                                             stop_after_epochs=20,
                                                                                             leak_correction_frequency=leak_correction_frequency)
@@ -56,5 +58,5 @@ for i in range(1, 11):
     c2st_accuracy = c2st(samples, reference_samples)
 
     with open('Leak_Fix/manual_logging.txt', 'a') as f:
-        f.write(f'weighted_attached_fix_{i} = {c2st_accuracy}, time_taken = {time_taken}, acceptance_rate = {acceptance_rate}\n')
+        f.write(f'inclusive_detached_{i} = {c2st_accuracy}, time_taken = {time_taken}, acceptance_rate = {acceptance_rate}\n')
 

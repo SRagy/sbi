@@ -407,6 +407,20 @@ class SNPE_C(PosteriorEstimator):
             log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
                 unnormalized_log_prob, dim=-1
             )
+        elif loss_function == "inclusive":
+            extra_samples = self._neural_net.sample(
+                num_norm_samples, context=x
+            ).reshape(batch_size * num_norm_samples, -1).detach() #detach vs not?
+            repeated_x = repeat_rows(x, num_norm_samples)
+            extra_log_posterior = self._neural_net.log_prob(extra_samples, repeated_x)
+            extra_log_posterior = extra_log_posterior.reshape(batch_size, num_norm_samples)
+
+            unnormalized_log_prob = torch.cat([unnormalized_log_prob, extra_log_posterior], dim=1)
+
+            log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
+                unnormalized_log_prob, dim=-1
+            )
+
         elif loss_function == "weighted":
 
             log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
