@@ -44,7 +44,7 @@ class CNNEmbedding(nn.Module):
         x = x.view(-1, 1, 32, 32)
         x = F.relu(self.conv1(x))
         x = self.pool(F.relu(self.conv2(x)))
-        x = x.view(-1, 6 * 4 * 4)
+        x = x.reshape(-1, 6 * 4 * 4)
         x = F.relu(self.fc(x))
         return x
 
@@ -68,7 +68,6 @@ class CNNEmbedding(nn.Module):
     ),
 )
 def test_inference_with_2d_x(embedding, method):
-
     num_dim = 2
     num_samples = 10
     num_simulations = 100

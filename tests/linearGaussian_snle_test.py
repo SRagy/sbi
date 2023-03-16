@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import pytest
-import torch
 from torch import eye, ones, zeros
 from torch.distributions import MultivariateNormal
 
 from sbi import utils as utils
 from sbi.inference import (
     SNLE,
+    ImportanceSamplingPosterior,
     MCMCPosterior,
     RejectionPosterior,
     VIPosterior,
@@ -26,7 +26,8 @@ from sbi.simulators.linear_gaussian import (
     true_posterior_linear_gaussian_mvn_prior,
 )
 from sbi.utils import likelihood_nn
-from tests.test_utils import check_c2st, get_prob_outside_uniform_prior
+
+from .test_utils import check_c2st, get_prob_outside_uniform_prior
 
 
 @pytest.mark.parametrize("num_dim", (1, 3))
@@ -68,7 +69,7 @@ def test_api_snl_on_linearGaussian(num_dim: int):
         posterior.sample(sample_shape=(num_samples,))
 
 
-def test_c2st_snl_on_linearGaussian():
+def test_c2st_snl_on_linearGaussian(density_estimator="maf"):
     """Test whether SNL infers well a simple example with available ground truth.
 
     This example has different number of parameters theta than number of x. This test
@@ -82,7 +83,7 @@ def test_c2st_snl_on_linearGaussian():
 
     x_o = zeros(1, x_dim)
     num_samples = 1000
-    num_simulations = 3100
+    num_simulations = 3000
 
     # likelihood_mean will be likelihood_shift+theta
     likelihood_shift = -1.0 * ones(x_dim)
@@ -106,7 +107,7 @@ def test_c2st_snl_on_linearGaussian():
         ),
         prior,
     )
-    density_estimator = likelihood_nn("maf", num_transforms=3)
+    density_estimator = likelihood_nn(model=density_estimator, num_transforms=3)
     inference = SNLE(density_estimator=density_estimator, show_progress_bars=False)
 
     theta, x = simulate_for_sbi(
@@ -127,7 +128,7 @@ def test_c2st_snl_on_linearGaussian():
     samples = posterior.sample((num_samples,))
 
     # Compute the c2st and assert it is near chance level of 0.5.
-    check_c2st(samples, target_samples, alg="snle_a")
+    check_c2st(samples, target_samples, alg=f"snle_a-{density_estimator}")
 
 
 @pytest.mark.slow
@@ -142,7 +143,7 @@ def test_c2st_and_map_snl_on_linearGaussian_different(num_dim: int, prior_str: s
 
     """
     num_samples = 500
-    num_simulations = 3000
+    num_simulations = 4500
     trials_to_test = [1]
 
     # likelihood_mean will be likelihood_shift+theta
@@ -368,9 +369,11 @@ def test_c2st_multi_round_snl_on_linearGaussian_vi(num_trials: int):
         ("fKL", "gaussian"),
         ("IW", "gaussian"),
         ("alpha", "gaussian"),
+        ("importance", "uniform"),
+        ("importance", "gaussian"),
     ),
 )
-@pytest.mark.parametrize("init_strategy", ("proposal", "sir"))
+@pytest.mark.parametrize("init_strategy", ("proposal", "resample", "sir"))
 def test_api_snl_sampling_methods(
     sampling_method: str, prior_str: str, init_strategy: str
 ):
@@ -397,6 +400,8 @@ def test_api_snl_sampling_methods(
         or "hmc" in sampling_method
     ):
         sample_with = "mcmc"
+    elif sampling_method == "importance":
+        sample_with = "importance"
     else:
         sample_with = "vi"
 
@@ -405,38 +410,48 @@ def test_api_snl_sampling_methods(
     else:
         prior = utils.BoxUniform(-1.0 * ones(num_dim), ones(num_dim))
 
-    simulator, prior = prepare_for_sbi(diagonal_linear_gaussian, prior)
-    inference = SNLE(show_progress_bars=False)
+    # Why do we have this if-case? Only the `MCMCPosterior` uses the `init_strategy`.
+    # Thus, we would not like to run, e.g., VI with all init_strategies, but only once
+    # (namely with `init_strategy=proposal`).
+    if sample_with == "mcmc" or init_strategy == "proposal":
+        simulator, prior = prepare_for_sbi(diagonal_linear_gaussian, prior)
+        inference = SNLE(show_progress_bars=False)
 
-    theta, x = simulate_for_sbi(
-        simulator, prior, num_simulations, simulation_batch_size=1000
-    )
-    likelihood_estimator = inference.append_simulations(theta, x).train(
-        max_num_epochs=5
-    )
-    potential_fn, theta_transform = likelihood_estimator_based_potential(
-        prior=prior, likelihood_estimator=likelihood_estimator, x_o=x_o
-    )
-    if sample_with == "rejection":
-        posterior = RejectionPosterior(potential_fn=potential_fn, proposal=prior)
-    elif (
-        "slice" in sampling_method
-        or "nuts" in sampling_method
-        or "hmc" in sampling_method
-    ):
-        posterior = MCMCPosterior(
-            potential_fn,
-            proposal=prior,
-            theta_transform=theta_transform,
-            method=sampling_method,
-            thin=3,
-            num_chains=num_chains,
-            init_strategy=init_strategy,
+        theta, x = simulate_for_sbi(
+            simulator, prior, num_simulations, simulation_batch_size=1000
         )
-    else:
-        posterior = VIPosterior(
-            potential_fn, theta_transform=theta_transform, vi_method=sampling_method
+        likelihood_estimator = inference.append_simulations(theta, x).train(
+            max_num_epochs=5
         )
-        posterior.train(max_num_iters=10)
+        potential_fn, theta_transform = likelihood_estimator_based_potential(
+            prior=prior, likelihood_estimator=likelihood_estimator, x_o=x_o
+        )
+        if sample_with == "rejection":
+            posterior = RejectionPosterior(potential_fn=potential_fn, proposal=prior)
+        elif (
+            "slice" in sampling_method
+            or "nuts" in sampling_method
+            or "hmc" in sampling_method
+        ):
+            posterior = MCMCPosterior(
+                potential_fn,
+                proposal=prior,
+                theta_transform=theta_transform,
+                method=sampling_method,
+                thin=3,
+                num_chains=num_chains,
+                init_strategy=init_strategy,
+            )
+        elif sample_with == "importance":
+            posterior = ImportanceSamplingPosterior(
+                potential_fn,
+                proposal=prior,
+                theta_transform=theta_transform,
+            )
+        else:
+            posterior = VIPosterior(
+                potential_fn, theta_transform=theta_transform, vi_method=sampling_method
+            )
+            posterior.train(max_num_iters=10)
 
-    posterior.sample(sample_shape=(num_samples,))
+        posterior.sample(sample_shape=(num_samples,))

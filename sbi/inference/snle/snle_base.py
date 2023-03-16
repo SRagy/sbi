@@ -21,8 +21,11 @@ from sbi.inference.potentials import likelihood_estimator_based_potential
 from sbi.utils import (
     check_estimator_arg,
     check_prior,
+    handle_invalid_x,
     mask_sims_from_prior,
+    nle_nre_apt_msg_on_invalid_x,
     validate_theta_and_x,
+    warn_if_zscoring_changes_data,
     x_shape_from_simulation,
 )
 
@@ -75,14 +78,13 @@ class LikelihoodEstimator(NeuralInference, ABC):
         else:
             self._build_neural_net = density_estimator
 
-        # SNLE-specific summary_writer fields.
-        self._summary.update({"mcmc_times": []})  # type: ignore
-
     def append_simulations(
         self,
         theta: Tensor,
         x: Tensor,
+        exclude_invalid_x: bool = False,
         from_round: int = 0,
+        data_device: Optional[str] = None,
     ) -> "LikelihoodEstimator":
         r"""Store parameters and simulation outputs to use them for later training.
 
@@ -95,20 +97,42 @@ class LikelihoodEstimator(NeuralInference, ABC):
         Args:
             theta: Parameter sets.
             x: Simulation outputs.
+            exclude_invalid_x: Whether invalid simulations are discarded during
+                training. If `False`, SNLE raises an error when invalid simulations are
+                found. If `True`, invalid simulations are discarded and training
+                can proceed, but this gives systematically wrong results.
             from_round: Which round the data stemmed from. Round 0 means from the prior.
                 With default settings, this is not used at all for `SNLE`. Only when
                 the user later on requests `.train(discard_prior_samples=True)`, we
                 use these indices to find which training data stemmed from the prior.
-
+            data_device: Where to store the data, default is on the same device where
+                the training is happening. If training a large dataset on a GPU with not
+                much VRAM can set to 'cpu' to store data on system memory instead.
         Returns:
             NeuralInference object (returned so that this function is chainable).
         """
 
-        theta, x = validate_theta_and_x(theta, x, training_device=self._device)
+        is_valid_x, num_nans, num_infs = handle_invalid_x(x, exclude_invalid_x)
+
+        x = x[is_valid_x]
+        theta = theta[is_valid_x]
+
+        # Check for problematic z-scoring
+        warn_if_zscoring_changes_data(x)
+        nle_nre_apt_msg_on_invalid_x(num_nans, num_infs, exclude_invalid_x, "SNLE")
+
+        if data_device is None:
+            data_device = self._device
+        theta, x = validate_theta_and_x(
+            theta, x, data_device=data_device, training_device=self._device
+        )
+
+        prior_masks = mask_sims_from_prior(int(from_round), theta.size(0))
 
         self._theta_roundwise.append(theta)
         self._x_roundwise.append(x)
-        self._prior_masks.append(mask_sims_from_prior(int(from_round), theta.size(0)))
+        self._prior_masks.append(prior_masks)
+
         self._data_round_index.append(int(from_round))
 
         return self
@@ -121,7 +145,6 @@ class LikelihoodEstimator(NeuralInference, ABC):
         stop_after_epochs: int = 20,
         max_num_epochs: int = 2**31 - 1,
         clip_max_norm: Optional[float] = 5.0,
-        exclude_invalid_x: bool = True,
         resume_training: bool = False,
         discard_prior_samples: bool = False,
         retrain_from_scratch: bool = False,
@@ -131,8 +154,6 @@ class LikelihoodEstimator(NeuralInference, ABC):
         r"""Train the density estimator to learn the distribution $p(x|\theta)$.
 
         Args:
-            exclude_invalid_x: Whether to exclude simulation outputs `x=NaN` or `x=±∞`
-                during training. Expect errors, silent or explicit, when `False`.
             resume_training: Can be used in case training time is limited, e.g. on a
                 cluster. If `True`, the split between train and validation set, the
                 optimizer, the number of epochs, and the best validation log-prob will
@@ -150,20 +171,13 @@ class LikelihoodEstimator(NeuralInference, ABC):
         Returns:
             Density estimator that has learned the distribution $p(x|\theta)$.
         """
-
-        # Starting index for the training set (1 = discard round-0 samples).
-        start_idx = int(discard_prior_samples and self._round > 0)
         # Load data from most recent round.
         self._round = max(self._data_round_index)
-        theta, x, _ = self.get_simulations(
-            start_idx, exclude_invalid_x, warn_on_invalid=True
-        )
-
-        # Dataset is shared for training and validation loaders.
-        dataset = data.TensorDataset(theta, x)
+        # Starting index for the training set (1 = discard round-0 samples).
+        start_idx = int(discard_prior_samples and self._round > 0)
 
         train_loader, val_loader = self.get_dataloaders(
-            dataset,
+            start_idx,
             training_batch_size,
             validation_fraction,
             resume_training,
@@ -176,10 +190,15 @@ class LikelihoodEstimator(NeuralInference, ABC):
         # This is passed into NeuralPosterior, to create a neural posterior which
         # can `sample()` and `log_prob()`. The network is accessible via `.net`.
         if self._neural_net is None or retrain_from_scratch:
+            # Get theta,x to initialize NN
+            theta, x, _ = self.get_simulations(starting_round=start_idx)
+            # Use only training data for building the neural net (z-scoring transforms)
             self._neural_net = self._build_neural_net(
-                theta[self.train_indices], x[self.train_indices]
+                theta[self.train_indices].to("cpu"),
+                x[self.train_indices].to("cpu"),
             )
-            self._x_shape = x_shape_from_simulation(x)
+            self._x_shape = x_shape_from_simulation(x.to("cpu"))
+            del theta, x
             assert (
                 len(self._x_shape) < 3
             ), "SNLE cannot handle multi-dimensional simulator output."
@@ -195,7 +214,6 @@ class LikelihoodEstimator(NeuralInference, ABC):
         while self.epoch <= max_num_epochs and not self._converged(
             self.epoch, stop_after_epochs
         ):
-
             # Train for a single epoch.
             self._neural_net.train()
             train_log_probs_sum = 0
@@ -223,7 +241,7 @@ class LikelihoodEstimator(NeuralInference, ABC):
             train_log_prob_average = train_log_probs_sum / (
                 len(train_loader) * train_loader.batch_size  # type: ignore
             )
-            self._summary["train_log_probs"].append(train_log_prob_average)
+            self._summary["training_log_probs"].append(train_log_prob_average)
 
             # Calculate validation performance.
             self._neural_net.eval()
@@ -250,16 +268,11 @@ class LikelihoodEstimator(NeuralInference, ABC):
         self._report_convergence_at_end(self.epoch, stop_after_epochs, max_num_epochs)
 
         # Update summary.
-        self._summary["epochs"].append(self.epoch)
-        self._summary["best_validation_log_probs"].append(self._best_val_log_prob)
+        self._summary["epochs_trained"].append(self.epoch)
+        self._summary["best_validation_log_prob"].append(self._best_val_log_prob)
 
         # Update TensorBoard and summary dict.
-        self._summarize(
-            round_=self._round,
-            x_o=None,
-            theta_bank=theta,
-            x_bank=x,
-        )
+        self._summarize(round_=self._round)
 
         # Update description for progress bar.
         if show_train_summary:
@@ -331,7 +344,9 @@ class LikelihoodEstimator(NeuralInference, ABC):
             device = next(density_estimator.parameters()).device.type
 
         potential_fn, theta_transform = likelihood_estimator_based_potential(
-            likelihood_estimator=likelihood_estimator, prior=prior, x_o=None
+            likelihood_estimator=likelihood_estimator,
+            prior=prior,
+            x_o=None,
         )
 
         if sample_with == "mcmc":

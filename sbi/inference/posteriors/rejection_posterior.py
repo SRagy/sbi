@@ -60,7 +60,6 @@ class RejectionPosterior(NeuralPosterior):
         self.proposal = proposal
         self.max_sampling_batch_size = max_sampling_batch_size
         self.num_samples_to_find_max = num_samples_to_find_max
-        self.num_samples_to_find_max = num_samples_to_find_max
         self.num_iter_to_find_max = num_iter_to_find_max
         self.m = m
 
@@ -208,7 +207,7 @@ class RejectionPosterior(NeuralPosterior):
                 `map`-attribute, and printed every `save_best_every`-th iteration.
                 Computing the best log-probability creates a significant overhead
                 (thus, the default is `10`.)
-            show_progress_bars: Whether or not to show a progressbar for sampling from
+            show_progress_bars: Whether to show a progressbar during sampling from
                 the posterior.
             force_update: Whether to re-calculate the MAP when x is unchanged and
                 have a cached value.

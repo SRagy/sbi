@@ -24,11 +24,12 @@ AUTHOR = "Álvaro Tejero-Cantero, Jakob H. Macke, Jan-Matthis Lückmann, Conor M
 REQUIRES_PYTHON = ">=3.6.0"
 
 REQUIRED = [
+    "arviz",
     "joblib>=1.0.0",
     "matplotlib",
     "numpy",
     "pillow",
-    "pyknos>=0.14.2",
+    "pyknos>=0.15.1",
     "pyro-ppl>=1.3.1",
     "scikit-learn",
     "scipy",
@@ -49,7 +50,7 @@ EXTRAS = {
         "mkdocs-material",
         "markdown-include",
         "mkdocs-redirects",
-        "mkdocstrings",
+        "mkdocstrings[python]>=0.18",
         "nbconvert",
         "pep517",
         "pytest",

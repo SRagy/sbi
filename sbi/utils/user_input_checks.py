@@ -38,12 +38,24 @@ def check_prior(prior: Any) -> None:
 
 
 def process_prior(
-    prior, custom_prior_wrapper_kwargs: Dict = {}
+    prior: Union[Sequence[Distribution], Distribution, rv_frozen, multi_rv_frozen],
+    custom_prior_wrapper_kwargs: Dict = {},
 ) -> Tuple[Distribution, int, bool]:
     """Return PyTorch distribution-like prior from user-provided prior.
 
+    NOTE: If the prior argument is a sequence of PyTorch distributions, they will be
+    interpreted as independent prior dimensions wrapped in a `MultipleIndependent`
+    pytorch Distribution. In case the elements are not PyTorch distributions, make sure
+    to use process_prior on each element in the list beforehand. See FAQ 7 for details.
+
+    NOTE: returns a tuple (processed_prior, num_params, whether_prior_returns_numpy).
+    The last two entries in the tuple can be passed on to `process_simulator` to prepare
+    the simulator as well. For example, it will take care of casting parameters to numpy
+    or adding a batch dimension to the simulator output, if needed.
+
     Args:
-        prior: Prior object with `.sample()` and `.log_prob()` as provided by the user.
+        prior: Prior object with `.sample()` and `.log_prob()` as provided by the user,
+            or a sequence of such objects.
         custom_prior_wrapper_kwargs: kwargs to be passed to the class that wraps a
             custom prior into a pytorch Distribution, e.g., for passing bounds for a
             prior with bounded support (lower_bound, upper_bound), or argument
@@ -66,6 +78,8 @@ def process_prior(
             interpreted as independent of each other and matched in order to the
             components of the parameter."""
         )
+        # process individual priors
+        prior = [process_prior(p, custom_prior_wrapper_kwargs)[0] for p in prior]
         return process_pytorch_prior(MultipleIndependent(prior))
 
     if isinstance(prior, Distribution):
@@ -267,9 +281,12 @@ def check_for_possibly_batched_x_shape(x_shape):
                 has an inferred batch shape larger than one. This is not supported in
                 some sbi methods for reasons depending on the scenario:
 
-                    - in case you want to evaluate or sample conditioned on several xs
-                    e.g., (p(theta | [x1, x2, x3])), this is not supported yet except
-                    when using likelihood based SNLE and SNRE.
+                    - in case you want to evaluate or sample conditioned on several iid
+                      xs e.g., (p(theta | [x1, x2, x3])), this is fully supported only
+                      for likelihood based SNLE and SNRE. For SNPE it is supported only
+                      for a fixed number of trials and using an appropriate embedding
+                      net, i.e., by treating the trials as additional data dimension. In
+                      that case, make sure to pass xo with a leading batch dimensionen.
 
                     - in case you trained with a single round to do amortized inference
                     and now you want to evaluate or sample a given theta conditioned on
@@ -339,7 +356,7 @@ def check_prior_attributes(prior) -> None:
             prior.sample(({num_samples}, )) to sample a batch of 2 parameters. Consider
             using a PyTorch distribution."""
         )
-    except:  # Catch any other error.
+    except Exception:  # Catch any other error.
         raise ValueError(
             f"""Something went wrong when sampling a batch of parameters
             from the prior as `prior.sample(({num_samples}, ))`. Consider using a
@@ -351,7 +368,7 @@ def check_prior_attributes(prior) -> None:
         raise AttributeError(
             "Prior needs method `.log_prob()`. Consider using a PyTorch distribution."
         )
-    except:  # Catch any other error.
+    except Exception:  # Catch any other error.
         raise ValueError(
             """Something went wrong when evaluating a batch of parameters theta
             with `prior.log_prob(theta)`. Consider using a PyTorch distribution."""
@@ -457,12 +474,20 @@ def check_data_device(datum_1: torch.Tensor, datum_2: torch.Tensor) -> None:
 
 def process_simulator(
     user_simulator: Callable,
-    prior,
+    prior: Distribution,
     is_numpy_simulator: bool,
 ) -> Callable:
-    """Return a simulator that meets the requirements for usage in sbi.
+    """Returns a simulator that meets the requirements for usage in sbi.
 
-    Wraps the simulator to return only `torch.Tensor` and handle batches of parameters.
+    Args:
+        user_simulator: simulator provided by the user, possibly written in numpy.
+        prior: prior as pytorch distribution or processed with `process_prior`.
+        is_numpy_simulator: whether the simulator needs theta in numpy types, returned
+            from `process_prior`.
+
+    Returns:
+        simulator: processed simulator that returns `torch.Tensor` can handle batches
+            of parameters.
     """
 
     assert isinstance(user_simulator, Callable), "Simulator must be a function."
@@ -516,7 +541,7 @@ def ensure_batched_simulator(simulator: Callable, prior) -> Callable:
         output_shape = simulator(prior.sample((batch_size,))).shape
         assert len(output_shape) > 1
         assert output_shape[0] == batch_size
-    except:
+    except Exception:
         is_batched_simulator = False
 
     return simulator if is_batched_simulator else get_batch_loop_simulator(simulator)
@@ -531,8 +556,10 @@ def get_batch_loop_simulator(simulator: Callable) -> Callable:
     def batch_loop_simulator(theta: Tensor) -> Tensor:
         """Return a batch of simulations by looping over a batch of parameters."""
         assert theta.ndim > 1, "Theta must have a batch dimension."
+        # Simulate in loop
         xs = list(map(simulator, theta))
-        return torch.cat(xs, dim=0).reshape(theta.shape[0], -1)
+        # Stack over batch to keep x_shape
+        return torch.stack(xs)
 
     return batch_loop_simulator
 
@@ -556,6 +583,10 @@ def process_x(
 
     x = atleast_2d(torch.as_tensor(x, dtype=float32))
 
+    # If x_shape is provided, we can fix a missing batch dim for >1D data.
+    if x_shape is not None and len(x_shape) > len(x.shape):
+        x = x.unsqueeze(0)
+
     input_x_shape = x.shape
     if not allow_iid_x:
         check_for_possibly_batched_x_shape(input_x_shape)
@@ -575,9 +606,10 @@ def process_x(
 
 
 def prepare_for_sbi(simulator: Callable, prior) -> Tuple[Callable, Distribution]:
-    """Prepare simulator, prior and for usage in sbi.
+    """Prepare simulator and prior for usage in sbi.
 
-    One of the goals is to allow you to use sbi with inputs computed in numpy.
+    NOTE: This is a wrapper around `process_prior` and `process_simulator` which can be
+    used in isolation as well.
 
     Attempts to meet the following requirements by reshaping and type-casting:
 
@@ -593,7 +625,7 @@ def prepare_for_sbi(simulator: Callable, prior) -> Tuple[Callable, Distribution]
         prior: Prior as provided by the user.
 
     Returns:
-        Tuple (simulator, prior, x_shape) checked and matching the requirements of sbi.
+        Tuple (simulator, prior) checked and matching the requirements of sbi.
     """
 
     # Check prior, return PyTorch prior.
@@ -647,7 +679,7 @@ def check_estimator_arg(estimator: Union[str, Callable]) -> None:
 
 
 def validate_theta_and_x(
-    theta: Any, x: Any, training_device: str = "cpu"
+    theta: Any, x: Any, data_device: str = "cpu", training_device: str = "cpu"
 ) -> Tuple[Tensor, Tensor]:
     r"""
     Checks if the passed $(\theta, x)$ are valid.
@@ -657,6 +689,10 @@ def validate_theta_and_x(
     2) If they have the same batchsize.
     3) If they are of `dtype=float32`.
 
+    Additionally, We move the data to the specified `data_device`. This is where the
+    data is stored and can be separate from `training_device`, where the
+    computations for training are performed.
+
     Raises:
         AssertionError: If theta or x are not torch.Tensor-like,
         do not yield the same batchsize and do not have dtype==float32.
@@ -664,6 +700,7 @@ def validate_theta_and_x(
     Args:
         theta: Parameters.
         x: Simulation outputs.
+        data_device: Device where data is stored.
         training_device: Training device for net.
     """
     assert isinstance(theta, Tensor), "Parameters theta must be a `torch.Tensor`."
@@ -679,21 +716,21 @@ def validate_theta_and_x(
     assert theta.dtype == float32, "Type of parameters must be float32."
     assert x.dtype == float32, "Type of simulator outputs must be float32."
 
-    if str(x.device) != training_device:
+    if str(x.device) != data_device:
         warnings.warn(
-            f"Data x has device '{x.device}' "
-            f"different from the training_device '{training_device}', "
-            f"moving x to the training_device '{training_device}'."
+            f"Data x has device '{x.device}'."
+            f"Moving x to the data_device '{data_device}'."
+            f"Training will proceed on device '{training_device}'."
         )
-        x = x.to(training_device)
+        x = x.to(data_device)
 
-    if str(theta.device) != training_device:
+    if str(theta.device) != data_device:
         warnings.warn(
-            f"Parameters theta has device '{theta.device}' "
-            f"different from the training_device '{training_device}', "
-            f"moving theta to the training_device '{training_device}'."
+            f"Parameters theta has device '{theta.device}'. "
+            f"Moving theta to the data_device '{data_device}'."
+            f"Training will proceed on device '{training_device}'."
         )
-        theta = theta.to(training_device)
+        theta = theta.to(data_device)
 
     return theta, x
 

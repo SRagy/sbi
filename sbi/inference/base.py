@@ -18,14 +18,7 @@ from torch.utils.tensorboard.writer import SummaryWriter
 import sbi.inference
 from sbi.inference.posteriors.base_posterior import NeuralPosterior
 from sbi.simulators.simutils import simulate_in_batches
-from sbi.utils import (
-    check_prior,
-    get_log_root,
-    handle_invalid_x,
-    warn_if_zscoring_changes_data,
-    warn_on_invalid_x,
-    warn_on_invalid_x_for_snpec_leakage,
-)
+from sbi.utils import check_prior, get_log_root
 from sbi.utils.sbiutils import get_simulations_since_round
 from sbi.utils.torchutils import check_if_prior_on_device, process_device
 from sbi.utils.user_input_checks import prepare_for_sbi
@@ -128,7 +121,9 @@ class NeuralInference(ABC):
 
         # Initialize roundwise (theta, x, prior_masks) for storage of parameters,
         # simulations and masks indicating if simulations came from prior.
-        self._theta_roundwise, self._x_roundwise, self._prior_masks = [], [], []
+        self._theta_roundwise = []
+        self._x_roundwise = []
+        self._prior_masks = []
         self._model_bank = []
 
         # Initialize list that indicates the round from which simulations were drawn.
@@ -148,19 +143,16 @@ class NeuralInference(ABC):
 
         # Logging during training (by SummaryWriter).
         self._summary = dict(
-            median_observation_distances=[],
-            epochs=[],
-            best_validation_log_probs=[],
+            epochs_trained=[],
+            best_validation_log_prob=[],
             validation_log_probs=[],
-            train_log_probs=[],
+            training_log_probs=[],
             epoch_durations_sec=[],
         )
 
     def get_simulations(
         self,
         starting_round: int = 0,
-        exclude_invalid_x: bool = True,
-        warn_on_invalid: bool = True,
     ) -> Tuple[Tensor, Tensor, Tensor]:
         r"""Returns all $\theta$, $x$, and prior_masks from rounds >= `starting_round`.
 
@@ -169,8 +161,6 @@ class NeuralInference(ABC):
         Args:
             starting_round: The earliest round to return samples from (we start counting
                 from zero).
-            exclude_invalid_x: Whether to exclude simulation outputs `x=NaN` or `x=±∞`
-                during training.
             warn_on_invalid: Whether to give out a warning if invalid simulations were
                 found.
 
@@ -187,17 +177,7 @@ class NeuralInference(ABC):
             self._prior_masks, self._data_round_index, starting_round
         )
 
-        # Check for NaNs in simulations.
-        is_valid_x, num_nans, num_infs = handle_invalid_x(x, exclude_invalid_x)
-        # Check for problematic z-scoring
-        warn_if_zscoring_changes_data(x[is_valid_x])
-        if warn_on_invalid:
-            warn_on_invalid_x(num_nans, num_infs, exclude_invalid_x)
-            warn_on_invalid_x_for_snpec_leakage(
-                num_nans, num_infs, exclude_invalid_x, type(self).__name__, self._round
-            )
-
-        return theta[is_valid_x], x[is_valid_x], prior_masks[is_valid_x]
+        return theta, x, prior_masks
 
     @abstractmethod
     def train(
@@ -218,7 +198,7 @@ class NeuralInference(ABC):
 
     def get_dataloaders(
         self,
-        dataset: data.TensorDataset,
+        starting_round: int = 0,
         training_batch_size: int = 50,
         validation_fraction: float = 0.1,
         resume_training: bool = False,
@@ -239,14 +219,19 @@ class NeuralInference(ABC):
 
         """
 
-        # Get total number of training examples.
-        num_examples = len(dataset)
+        #
+        theta, x, prior_masks = self.get_simulations(starting_round)
 
+        dataset = data.TensorDataset(theta, x, prior_masks)
+
+        # Get total number of training examples.
+        num_examples = theta.size(0)
         # Select random train and validation splits from (theta, x) pairs.
         num_training_examples = int((1 - validation_fraction) * num_examples)
         num_validation_examples = num_examples - num_training_examples
 
         if not resume_training:
+            # Seperate indicies for training and validation
             permuted_indices = torch.randperm(num_examples)
             self.train_indices, self.val_indices = (
                 permuted_indices[:num_training_examples],
@@ -320,15 +305,15 @@ class NeuralInference(ABC):
 
     @staticmethod
     def _describe_round(round_: int, summary: Dict[str, list]) -> str:
-        epochs = summary["epochs"][-1]
-        best_validation_log_probs = summary["best_validation_log_probs"][-1]
+        epochs = summary["epochs_trained"][-1]
+        best_validation_log_prob = summary["best_validation_log_prob"][-1]
 
         description = f"""
         -------------------------
         ||||| ROUND {round_ + 1} STATS |||||:
         -------------------------
         Epochs trained: {epochs}
-        Best validation performance: {best_validation_log_probs:.4f}
+        Best validation performance: {best_validation_log_prob:.4f}
         -------------------------
         """
 
@@ -358,76 +343,69 @@ class NeuralInference(ABC):
             )
 
     def _summarize(
-        self, round_: int, x_o: Union[Tensor, None], theta_bank: Tensor, x_bank: Tensor
+        self,
+        round_: int,
     ) -> None:
         """Update the summary_writer with statistics for a given round.
 
-        Statistics are extracted from the arguments and from entries in self._summary
-        created during training.
+        During training several performance statistics are added to the summary, e.g.,
+        using `self._summary['key'].append(value)`. This function writes these values
+        into summary writer object.
+
+        Args:
+            round: index of round
 
         Scalar tags:
-            - median_observation_distances
-            - epochs_trained
-            - best_validation_log_prob
-            - validation_log_probs_across_rounds
-            - train_log_probs_across_rounds
-            - epoch_durations_sec_across_rounds
+            - epochs_trained:
+                number of epochs trained
+            - best_validation_log_prob:
+                best validation log prob (for each round).
+            - validation_log_probs:
+                validation log probs for every epoch (for each round).
+            - training_log_probs
+                training log probs for every epoch (for each round).
+            - epoch_durations_sec
+                epoch duration for every epoch (for each round)
+
         """
-
-        # NB. This is a subset of the logging as done in `GH:conormdurkan/lfi`. A big
-        # part of the logging was removed because of API changes, e.g., logging
-        # comparisons to ground-truth parameters and samples.
-
-        # Median |x - x0| for most recent round.
-        if x_o is not None:
-            median_observation_distance = torch.median(
-                torch.sqrt(torch.sum((x_bank - x_o.reshape(1, -1)) ** 2, dim=-1))
-            )
-            self._summary["median_observation_distances"].append(
-                median_observation_distance.item()
-            )
-
-            self._summary_writer.add_scalar(
-                tag="median_observation_distance",
-                scalar_value=self._summary["median_observation_distances"][-1],
-                global_step=round_ + 1,
-            )
 
         # Add most recent training stats to summary writer.
         self._summary_writer.add_scalar(
             tag="epochs_trained",
-            scalar_value=self._summary["epochs"][-1],
+            scalar_value=self._summary["epochs_trained"][-1],
             global_step=round_ + 1,
         )
 
         self._summary_writer.add_scalar(
             tag="best_validation_log_prob",
-            scalar_value=self._summary["best_validation_log_probs"][-1],
+            scalar_value=self._summary["best_validation_log_prob"][-1],
             global_step=round_ + 1,
         )
 
         # Add validation log prob for every epoch.
         # Offset with all previous epochs.
         offset = (
-            torch.tensor(self._summary["epochs"][:-1], dtype=torch.int).sum().item()
+            torch.tensor(self._summary["epochs_trained"][:-1], dtype=torch.int)
+            .sum()
+            .item()
         )
         for i, vlp in enumerate(self._summary["validation_log_probs"][offset:]):
             self._summary_writer.add_scalar(
-                tag="validation_log_probs_across_rounds",
+                tag="validation_log_probs",
                 scalar_value=vlp,
                 global_step=offset + i,
             )
 
-        for i, tlp in enumerate(self._summary["train_log_probs"][offset:]):
+        for i, tlp in enumerate(self._summary["training_log_probs"][offset:]):
             self._summary_writer.add_scalar(
-                tag="train_log_probs_across_rounds",
+                tag="training_log_probs",
                 scalar_value=tlp,
                 global_step=offset + i,
             )
 
         for i, eds in enumerate(self._summary["epoch_durations_sec"][offset:]):
             self._summary_writer.add_scalar(
-                tag="epoch_durations_sec_across_rounds",
+                tag="epoch_durations_sec",
                 scalar_value=eds,
                 global_step=offset + i,
             )

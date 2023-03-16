@@ -96,7 +96,6 @@ class SNPE_C(PosteriorEstimator):
         clip_max_norm: Optional[float] = 5.0,
         summary_fun: Optional[Callable] = lambda x: x,
         calibration_kernel: Optional[Callable] = None,
-        exclude_invalid_x: bool = True,
         resume_training: bool = False,
         force_first_round_loss: bool = False,
         discard_prior_samples: bool = False,
@@ -121,8 +120,6 @@ class SNPE_C(PosteriorEstimator):
                 prevent exploding gradients. Use None for no clipping.
             calibration_kernel: A function to calibrate the loss with respect to the
                 simulations `x`. See Lueckmann, Gonçalves et al., NeurIPS 2017.
-            exclude_invalid_x: Whether to exclude simulation outputs `x=NaN` or `x=±∞`
-                during training. Expect errors, silent or explicit, when `False`.
             resume_training: Can be used in case training time is limited, e.g. on a
                 cluster. If `True`, the split between train and validation set, the
                 optimizer, the number of epochs, and the best validation log-prob will
@@ -167,16 +164,14 @@ class SNPE_C(PosteriorEstimator):
             # last proposal.
 
             proposal = self._proposal_roundwise[-1]
-            if isinstance(proposal, BoxUniform):
-                self.use_non_atomic_loss = False
-            else:
-                self.use_non_atomic_loss = (
-                    isinstance(proposal.posterior_estimator._distribution, mdn)
-                    and isinstance(self._neural_net._distribution, mdn)
-                    and check_dist_class(
-                        self._prior, class_to_check=(Uniform, MultivariateNormal)
-                    )[0]
-                )
+            self.use_non_atomic_loss = (
+                isinstance(proposal, DirectPosterior)
+                and isinstance(proposal.posterior_estimator._distribution, mdn)
+                and isinstance(self._neural_net._distribution, mdn)
+                and check_dist_class(
+                    self._prior, class_to_check=(Uniform, MultivariateNormal)
+                )[0]
+            )
 
             algorithm = "non-atomic" if self.use_non_atomic_loss else "atomic"
             print(f"Using SNPE-C with {algorithm} loss")
@@ -417,7 +412,11 @@ class SNPE_C(PosteriorEstimator):
         log_prob_proposal_posterior = utils.mog_log_prob(
             theta, logits_pp, m_pp, prec_pp
         )
-        utils.assert_all_finite(log_prob_proposal_posterior, "proposal posterior eval")
+        utils.assert_all_finite(
+            log_prob_proposal_posterior,
+            """the evaluation of the MoG proposal posterior. This is likely due to a 
+            numerical instability in the training procedure. Please create an issue on Github.""",
+        )
 
         return log_prob_proposal_posterior
 

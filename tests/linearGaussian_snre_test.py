@@ -10,7 +10,10 @@ from torch.distributions import MultivariateNormal
 from sbi import utils as utils
 from sbi.inference import (
     AALR,
+    BNRE,
     SNRE_B,
+    SNRE_C,
+    ImportanceSamplingPosterior,
     MCMCPosterior,
     RejectionPosterior,
     VIPosterior,
@@ -18,6 +21,7 @@ from sbi.inference import (
     ratio_estimator_based_potential,
     simulate_for_sbi,
 )
+from sbi.inference.snre.snre_base import RatioEstimator
 from sbi.simulators.linear_gaussian import (
     diagonal_linear_gaussian,
     linear_gaussian,
@@ -33,7 +37,8 @@ from tests.test_utils import (
 
 
 @pytest.mark.parametrize("num_dim", (1, 3))
-def test_api_sre_on_linearGaussian(num_dim: int):
+@pytest.mark.parametrize("SNRE", (SNRE_B, SNRE_C))
+def test_api_sre_on_linearGaussian(num_dim: int, SNRE: RatioEstimator):
     """Test inference API of SRE with linear Gaussian model.
 
     Avoids intense computation for fast testing of API etc.
@@ -45,7 +50,7 @@ def test_api_sre_on_linearGaussian(num_dim: int):
     prior = MultivariateNormal(loc=zeros(num_dim), covariance_matrix=eye(num_dim))
 
     simulator, prior = prepare_for_sbi(diagonal_linear_gaussian, prior)
-    inference = SNRE_B(
+    inference = SNRE(
         classifier="resnet",
         show_progress_bars=False,
     )
@@ -67,7 +72,8 @@ def test_api_sre_on_linearGaussian(num_dim: int):
         posterior.sample(sample_shape=(10,))
 
 
-def test_c2st_sre_on_linearGaussian():
+@pytest.mark.parametrize("SNRE", (SNRE_B, SNRE_C))
+def test_c2st_sre_on_linearGaussian(SNRE: RatioEstimator):
     """Test whether SRE infers well a simple example with available ground truth.
 
     This example has different number of parameters theta than number of x. This test
@@ -96,7 +102,7 @@ def test_c2st_sre_on_linearGaussian():
         ),
         prior,
     )
-    inference = SNRE_B(
+    inference = SNRE(
         classifier="resnet",
         show_progress_bars=False,
     )
@@ -141,6 +147,9 @@ def test_c2st_sre_on_linearGaussian():
         (1, 1, "gaussian", "sre"),
         (2, 1, "uniform", "sre"),
         (2, 5, "gaussian", "aalr"),
+        (2, 1, "gaussian", "bnre"),
+        (2, 5, "gaussian", "bnre"),
+        (2, 5, "gaussian", "nrec"),
     ),
 )
 def test_c2st_sre_variants_on_linearGaussian(
@@ -159,7 +168,10 @@ def test_c2st_sre_variants_on_linearGaussian(
 
     x_o = zeros(num_trials, num_dim)
     num_samples = 500
-    num_simulations = 2600 if num_trials == 1 else 40500
+    if method_str == "bnre":
+        num_simulations = 30000 if num_trials == 1 else 40500
+    else:
+        num_simulations = 3000 if num_trials == 1 else 40500
 
     # `likelihood_mean` will be `likelihood_shift + theta`.
     likelihood_shift = -1.0 * ones(num_dim)
@@ -181,13 +193,26 @@ def test_c2st_sre_variants_on_linearGaussian(
         show_progress_bars=False,
     )
 
-    inference = SNRE_B(**kwargs) if method_str == "sre" else AALR(**kwargs)
+    if method_str == "sre":
+        inference = SNRE_B(**kwargs)
+        train_kwargs = {}
+    elif method_str == "aalr":
+        inference = AALR(**kwargs)
+        train_kwargs = {}
+    elif method_str == "bnre":
+        inference = BNRE(**kwargs)
+        train_kwargs = {"regularization_strength": 20}
+    elif method_str == "nrec":
+        inference = SNRE_C(**kwargs)
+        train_kwargs = {}
+    else:
+        raise ValueError(f"{method_str} is not an allowed option")
 
     # Should use default `num_atoms=10` for SRE; `num_atoms=2` for AALR
     theta, x = simulate_for_sbi(
         simulator, prior, num_simulations, simulation_batch_size=50
     )
-    ratio_estimator = inference.append_simulations(theta, x).train()
+    ratio_estimator = inference.append_simulations(theta, x).train(**train_kwargs)
     potential_fn, theta_transform = ratio_estimator_based_potential(
         ratio_estimator=ratio_estimator, prior=prior, x_o=x_o
     )
@@ -220,7 +245,7 @@ def test_c2st_sre_variants_on_linearGaussian(
     map_ = posterior.map(num_init_samples=1_000, init_method="proposal")
 
     # Checks for log_prob()
-    if prior_str == "gaussian" and method_str == "aalr":
+    if prior_str == "gaussian" and (method_str == "aalr" or method_str == "bnre"):
         # For the Gaussian prior, we compute the KLd between ground truth and
         # posterior. We can do this only if the classifier_loss was as described in
         # Hermans et al. 2020 ('aalr') since Durkan et al. 2020 version only allows
@@ -250,7 +275,10 @@ def test_c2st_sre_variants_on_linearGaussian(
 
 @pytest.mark.slow
 @pytest.mark.parametrize("num_trials", (1, 3))
-def test_c2st_multi_round_snr_on_linearGaussian_vi(num_trials: int):
+@pytest.mark.parametrize("SNRE", (SNRE_B, SNRE_C))
+def test_c2st_multi_round_snr_on_linearGaussian_vi(
+    num_trials: int, SNRE: RatioEstimator
+):
     """Test SNL on linear Gaussian, comparing to ground truth posterior via c2st."""
 
     num_dim = 2
@@ -273,7 +301,7 @@ def test_c2st_multi_round_snr_on_linearGaussian_vi(num_trials: int):
     simulator, prior = prepare_for_sbi(
         lambda theta: linear_gaussian(theta, likelihood_shift, likelihood_cov), prior
     )
-    inference = SNRE_B(show_progress_bars=False)
+    inference = SNRE(show_progress_bars=False)
 
     theta, x = simulate_for_sbi(
         simulator, prior, num_simulations_per_round, simulation_batch_size=50
@@ -331,6 +359,8 @@ def test_c2st_multi_round_snr_on_linearGaussian_vi(num_trials: int):
         ("fKL", "gaussian"),
         ("IW", "gaussian"),
         ("alpha", "gaussian"),
+        ("importance", "uniform"),
+        ("importance", "gaussian"),
     ),
 )
 def test_api_sre_sampling_methods(sampling_method: str, prior_str: str):
@@ -356,6 +386,8 @@ def test_api_sre_sampling_methods(sampling_method: str, prior_str: str):
         or "hmc" in sampling_method
     ):
         sample_with = "mcmc"
+    elif sampling_method == "importance":
+        sample_with = "importance"
     else:
         sample_with = "vi"
 
@@ -388,6 +420,12 @@ def test_api_sre_sampling_methods(sampling_method: str, prior_str: str):
             method=sampling_method,
             thin=3,
             num_chains=num_chains,
+        )
+    elif sample_with == "importance":
+        posterior = ImportanceSamplingPosterior(
+            potential_fn,
+            proposal=prior,
+            theta_transform=theta_transform,
         )
     else:
         posterior = VIPosterior(

@@ -21,9 +21,9 @@ from sbi.inference import (
     SNPE_C,
     SNRE_A,
     SNRE_B,
+    SNRE_C,
     DirectPosterior,
     MCMCPosterior,
-    NeuralInference,
     RejectionPosterior,
     VIPosterior,
     likelihood_estimator_based_potential,
@@ -31,6 +31,7 @@ from sbi.inference import (
     ratio_estimator_based_potential,
     simulate_for_sbi,
 )
+from sbi.inference.posteriors.importance_posterior import ImportanceSamplingPosterior
 from sbi.inference.potentials.base_potential import BasePotential
 from sbi.simulators import diagonal_linear_gaussian, linear_gaussian
 from sbi.utils.get_nn_models import classifier_nn, likelihood_nn, posterior_nn
@@ -50,12 +51,19 @@ from sbi.utils.user_input_checks import (
         (SNPE_C, "mdn", "rejection"),
         (SNPE_C, "maf", "slice"),
         (SNPE_C, "maf", "direct"),
+        (SNPE_C, "maf_rqs", "direct"),
         (SNLE, "maf", "slice"),
         (SNLE, "nsf", "slice_np"),
         (SNLE, "nsf", "rejection"),
+        (SNLE, "maf", "importance"),
+        (SNLE, "maf_rqs", "slice"),
         (SNRE_A, "mlp", "slice_np_vectorized"),
         (SNRE_B, "resnet", "nuts"),
         (SNRE_B, "resnet", "rejection"),
+        (SNRE_B, "resnet", "importance"),
+        (SNRE_C, "resnet", "nuts"),
+        (SNRE_C, "resnet", "rejection"),
+        (SNRE_C, "resnet", "importance"),
     ],
 )
 @pytest.mark.parametrize("data_device", ("cpu", "cuda:0"))
@@ -113,12 +121,15 @@ def test_training_and_mcmc_on_device(
         kwargs = dict(
             density_estimator=utils.posterior_nn(model=model, num_transforms=2)
         )
+        train_kwargs = dict(force_first_round_loss=True)
     elif method == SNLE:
         kwargs = dict(
             density_estimator=utils.likelihood_nn(model=model, num_transforms=2)
         )
-    elif method in (SNRE_A, SNRE_B):
+        train_kwargs = dict()
+    elif method in (SNRE_A, SNRE_B, SNRE_C):
         kwargs = dict(classifier=utils.classifier_nn(model=model))
+        train_kwargs = dict()
     else:
         raise ValueError()
 
@@ -132,7 +143,7 @@ def test_training_and_mcmc_on_device(
         theta, x = theta.to(data_device), x.to(data_device)
 
         estimator = inferer.append_simulations(theta, x).train(
-            training_batch_size=100, max_num_epochs=max_num_epochs
+            training_batch_size=100, max_num_epochs=max_num_epochs, **train_kwargs
         )
         if method == SNLE:
             potential_fn, theta_transform = likelihood_estimator_based_potential(
@@ -142,7 +153,7 @@ def test_training_and_mcmc_on_device(
             potential_fn, theta_transform = posterior_estimator_based_potential(
                 estimator, prior, x_o
             )
-        elif method == SNRE_A or method == SNRE_B:
+        elif method == SNRE_A or method == SNRE_B or method == SNRE_C:
             potential_fn, theta_transform = ratio_estimator_based_potential(
                 estimator, prior, x_o
             )
@@ -159,6 +170,10 @@ def test_training_and_mcmc_on_device(
             posterior = DirectPosterior(
                 posterior_estimator=estimator, prior=prior
             ).set_default_x(x_o)
+        elif mcmc_method == "importance":
+            posterior = ImportanceSamplingPosterior(
+                potential_fn=potential_fn, proposal=prior
+            )
         else:
             posterior = MCMCPosterior(
                 potential_fn=potential_fn,
@@ -202,7 +217,6 @@ def test_process_device(device_input: str, device_target: Optional[str]) -> None
 def test_check_embedding_net_device(
     device_datum: str, device_embedding_net: str
 ) -> None:
-
     datum = torch.zeros((1, 1)).to(device_datum)
     embedding_net = nn.Linear(in_features=1, out_features=1).to(device_embedding_net)
 
@@ -261,26 +275,25 @@ def test_validate_theta_and_x_device(training_device: str, data_device: str) -> 
     theta = torch.empty((1, 1)).to(data_device)
     x = torch.empty((1, 1)).to(data_device)
 
-    if training_device != data_device:
-        with pytest.warns(UserWarning):
-            theta, x = validate_theta_and_x(theta, x, training_device=training_device)
-    else:
-        theta, x = validate_theta_and_x(theta, x, training_device=training_device)
+    theta, x = validate_theta_and_x(
+        theta, x, data_device=data_device, training_device=training_device
+    )
 
-    assert str(theta.device) == training_device, (
-        f"Data should have its device converted from '{data_device}' "
-        f"to training_device '{training_device}'."
+    assert str(theta.device) == data_device, (
+        f"Data and parameters must be on the same device but:"
+        f"data device='{data_device}' and training_device='{training_device}'."
     )
 
 
 @pytest.mark.gpu
-@pytest.mark.parametrize("inference_method", [SNPE_A, SNPE_C, SNRE_A, SNRE_B, SNLE])
+@pytest.mark.parametrize(
+    "inference_method", [SNPE_A, SNPE_C, SNRE_A, SNRE_B, SNRE_C, SNLE]
+)
 @pytest.mark.parametrize("data_device", ("cpu", "cuda:0"))
 @pytest.mark.parametrize("training_device", ("cpu", "cuda:0"))
 def test_train_with_different_data_and_training_device(
     inference_method, data_device: str, training_device: str
 ) -> None:
-
     assert torch.cuda.is_available(), "this test requires that cuda is available."
 
     num_dim = 2
@@ -293,7 +306,7 @@ def test_train_with_different_data_and_training_device(
         prior,
         **(
             dict(classifier="resnet")
-            if inference_method in [SNRE_A, SNRE_B]
+            if inference_method in [SNRE_A, SNRE_B, SNRE_C]
             else dict(
                 density_estimator=(
                     "mdn_snpe_a" if inference_method == SNPE_A else "maf"
@@ -321,7 +334,9 @@ def test_train_with_different_data_and_training_device(
 
 
 @pytest.mark.gpu
-@pytest.mark.parametrize("inference_method", [SNPE_A, SNPE_C, SNRE_A, SNRE_B, SNLE])
+@pytest.mark.parametrize(
+    "inference_method", [SNPE_A, SNPE_C, SNRE_A, SNRE_B, SNRE_C, SNLE]
+)
 @pytest.mark.parametrize("prior_device", ("cpu", "cuda"))
 @pytest.mark.parametrize("embedding_net_device", ("cpu", "cuda"))
 @pytest.mark.parametrize("data_device", ("cpu", "cuda"))
@@ -333,7 +348,6 @@ def test_embedding_nets_integration_training_device(
     data_device: str,
     training_device: str,
 ) -> None:
-
     # add other methods
 
     D_theta = 2
@@ -347,7 +361,7 @@ def test_embedding_nets_integration_training_device(
         low=-torch.ones((D_theta,)), high=torch.ones((D_theta,)), device=prior_device
     )
 
-    if inference_method in [SNRE_A, SNRE_B]:
+    if inference_method in [SNRE_A, SNRE_B, SNRE_C]:
         embedding_net_theta = nn.Linear(in_features=D_theta, out_features=2).to(
             embedding_net_device
         )
@@ -362,6 +376,7 @@ def test_embedding_nets_integration_training_device(
                 hidden_features=4,
             )
         )
+        train_kwargs = dict()
     elif inference_method == SNLE:
         embedding_net = nn.Linear(in_features=D_theta, out_features=2).to(
             embedding_net_device
@@ -374,6 +389,7 @@ def test_embedding_nets_integration_training_device(
                 num_transforms=2,
             )
         )
+        train_kwargs = dict()
     else:
         embedding_net = nn.Linear(in_features=D_x, out_features=2).to(
             embedding_net_device
@@ -386,6 +402,10 @@ def test_embedding_nets_integration_training_device(
                 num_transforms=2,
             )
         )
+        if inference_method == SNPE_A:
+            train_kwargs = dict()
+        else:
+            train_kwargs = dict(force_first_round_loss=True)
 
     with pytest.raises(Exception) if prior_device != training_device else nullcontext():
         inference = inference_method(prior=prior, **nn_kwargs, device=training_device)
@@ -408,19 +428,19 @@ def test_embedding_nets_integration_training_device(
         ) if data_device != training_device else nullcontext():
             density_estimator_append = inference.append_simulations(theta, X)
 
-        with pytest.warns(UserWarning) if (round_idx == 0) and (
-            embedding_net_device != training_device
-        ) else nullcontext():
-            density_estimator_train = density_estimator_append.train(max_num_epochs=2)
+        density_estimator_train = density_estimator_append.train(
+            max_num_epochs=2, **train_kwargs
+        )
 
         posterior = inference.build_posterior(density_estimator_train)
         proposal = posterior.set_default_x(x_o)
         theta = proposal.sample((samples_per_round,))
 
 
-@pytest.mark.parametrize("inference_method", [SNPE_A, SNPE_C, SNRE_A, SNRE_B, SNLE])
+@pytest.mark.parametrize(
+    "inference_method", [SNPE_A, SNPE_C, SNRE_A, SNRE_B, SNRE_C, SNLE]
+)
 def test_nograd_after_inference_train(inference_method) -> None:
-
     num_dim = 2
     prior_ = BoxUniform(-torch.ones(num_dim), torch.ones(num_dim))
     simulator, prior = prepare_for_sbi(diagonal_linear_gaussian, prior_)
@@ -429,7 +449,7 @@ def test_nograd_after_inference_train(inference_method) -> None:
         prior,
         **(
             dict(classifier="resnet")
-            if inference_method in [SNRE_A, SNRE_B]
+            if inference_method in [SNRE_A, SNRE_B, SNRE_C]
             else dict(
                 density_estimator=(
                     "mdn_snpe_a" if inference_method == SNPE_A else "maf"
@@ -465,7 +485,6 @@ def test_vi_on_gpu(num_dim: int, q: Distribution, vi_method: str, sampling_metho
         num_dim: parameter dimension of the gaussian model
         vi_method: different vi methods
         sampling_method: Different sampling methods
-
     """
 
     device = "cuda:0"

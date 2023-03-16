@@ -11,8 +11,8 @@ from sbi.inference.posteriors.base_posterior import NeuralPosterior
 from sbi.inference.potentials.posterior_based_potential import (
     posterior_estimator_based_potential,
 )
-from sbi.samplers.rejection.rejection import rejection_sample_posterior_within_prior
-from sbi.types import Shape
+from sbi.samplers.rejection.rejection import accept_reject_sample
+from sbi.types import Shape, TorchTransform
 from sbi.utils import check_prior, match_theta_and_x_batch_shapes, within_support
 from sbi.utils.torchutils import ensure_theta_batched
 
@@ -38,6 +38,7 @@ class DirectPosterior(NeuralPosterior):
         max_sampling_batch_size: int = 10_000,
         device: Optional[str] = None,
         x_shape: Optional[torch.Size] = None,
+        enable_transform: bool = True,
     ):
         """
         Args:
@@ -49,13 +50,19 @@ class DirectPosterior(NeuralPosterior):
                 `potential_fn.device` is used.
             x_shape: Shape of a single simulator output. If passed, it is used to check
                 the shape of the observed data and give a descriptive error.
+            enable_transform: Whether to transform parameters to unconstrained space
+                during MAP optimization. When False, an identity transform will be returned
+                for `theta_transform`.
         """
         # Because `DirectPosterior` does not take the `potential_fn` as input, it
         # builds it itself. The `potential_fn` and `theta_transform` are used only for
         # obtaining the MAP.
         check_prior(prior)
         potential_fn, theta_transform = posterior_estimator_based_potential(
-            posterior_estimator, prior, None
+            posterior_estimator,
+            prior,
+            x_o=None,
+            enable_transform=enable_transform,
         )
 
         super().__init__(
@@ -108,13 +115,14 @@ class DirectPosterior(NeuralPosterior):
                 f"`.build_posterior(sample_with={sample_with}).`"
             )
 
-        samples = rejection_sample_posterior_within_prior(
-            posterior_nn=self.posterior_estimator,
-            prior=self.prior,
-            x=x,
+        samples = accept_reject_sample(
+            proposal=self.posterior_estimator,
+            accept_reject_fn=lambda theta: within_support(self.prior, theta),
             num_samples=num_samples,
             show_progress_bars=show_progress_bars,
             max_sampling_batch_size=max_sampling_batch_size,
+            proposal_sampling_kwargs={"context": x},
+            alternative_method="build_posterior(..., sample_with='mcmc')",
         )[0]
         return samples
 
@@ -159,7 +167,6 @@ class DirectPosterior(NeuralPosterior):
         theta_repeated, x_repeated = match_theta_and_x_batch_shapes(theta, x)
 
         with torch.set_grad_enabled(track_gradients):
-
             # Evaluate on device, move back to cpu for comparison with prior.
             unnorm_log_prob = self.posterior_estimator.log_prob(
                 theta_repeated, context=x_repeated
@@ -213,15 +220,14 @@ class DirectPosterior(NeuralPosterior):
         """
 
         def acceptance_at(x: Tensor) -> Tensor:
-
-            return rejection_sample_posterior_within_prior(
-                posterior_nn=self.posterior_estimator,
-                prior=self.prior,
-                x=x.to(self._device),
+            return accept_reject_sample(
+                proposal=self.posterior_estimator,
+                accept_reject_fn=lambda theta: within_support(self.prior, theta),
                 num_samples=num_rejection_samples,
                 show_progress_bars=show_progress_bars,
                 sample_for_correction_factor=True,
                 max_sampling_batch_size=rejection_sampling_batch_size,
+                proposal_sampling_kwargs={"context": x},
             )[1]
 
         # Check if the provided x matches the default x (short-circuit on identity).
@@ -284,8 +290,8 @@ class DirectPosterior(NeuralPosterior):
                 `map`-attribute, and printed every `save_best_every`-th iteration.
                 Computing the best log-probability creates a significant overhead
                 (thus, the default is `10`.)
-            show_progress_bars: Whether or not to show a progressbar for sampling from
-                the posterior.
+            show_progress_bars: Whether to show a progressbar during sampling from the
+                posterior.
             force_update: Whether to re-calculate the MAP when x is unchanged and
                 have a cached value.
             log_prob_kwargs: Will be empty for SNLE and SNRE. Will contain

@@ -7,6 +7,8 @@ import torch
 import torch.distributions.transforms as torch_tf
 from torch import Tensor
 
+from sbi.samplers.importance.sir import sampling_importance_resampling
+
 
 class IterateParameters:
     """Iterates through parameters by rows"""
@@ -32,27 +34,59 @@ def proposal_init(
     return transformed_prior_samples  # type: ignore
 
 
-def sir(
+def sir_init(
     proposal: Any,
     potential_fn: Callable,
     transform: torch_tf.Transform,
-    sir_num_batches: int = 10,
-    sir_batch_size: int = 1000,
+    num_candidate_samples: int = 10_000,
     **kwargs: Any,
 ) -> Tensor:
     r"""Return a sample obtained by sequential importance reweighting.
 
     See Rubin 1988, "Using the sir algorithm to simulate posterior distributions."
 
-    This function can also do `SIR` on the conditional posterior
-    $p(\theta_i|\theta_j, x)$ when a `condition` and `dims_to_sample` are passed.
+    Args:
+        proposal: Proposal distribution, candidate samples are drawn from it.
+        potential_fn: Potential function that the candidate samples are weighted with.
+            Note that the function needs to return log probabilities.
+        num_candidate_samples: Number of candidate samples per batch.
+
+    Returns:
+        A single sample.
+    """
+    sample = sampling_importance_resampling(
+        potential_fn=potential_fn,
+        proposal=proposal,
+        num_samples=1,
+        num_candidate_samples=num_candidate_samples,
+        **kwargs,
+    )
+    return transform(sample)  # type: ignore
+
+
+def resample_given_potential_fn(
+    proposal: Any,
+    potential_fn: Callable,
+    transform: torch_tf.Transform,
+    num_candidate_samples: int = 10_000,
+    num_batches: int = 1,
+    **kwargs: Any,
+) -> Tensor:
+    r"""Return a sample via resampling proposal samples with `potential_fn` weights.
+
+    The difference to actually performing SIR is that the weights are given only
+    by the `potential_fn`, whereas SIR corrects for the `proposal.log_prob()`.
+
+    Up to `sbi` v0.18.0, this method was the default. As of `sbi` v0.19.0, the default
+    is SIR (i.e., with correction).
 
     Args:
         proposal: Proposal distribution, candidate samples are drawn from it.
         potential_fn: Potential function that the candidate samples are weighted with.
             Note that the function needs to return log probabilities.
-        sir_num_batches: Number of candidate batches drawn.
-        sir_batch_size: Batch size used for evaluating candidates.
+        num_batches: Number of batches drawn.
+        num_candidate_samples: Number of candidate samples per batch.
+
 
     Returns:
         A single sample.
@@ -61,8 +95,8 @@ def sir(
     with torch.set_grad_enabled(False):
         log_weights = []
         init_param_candidates = []
-        for i in range(sir_num_batches):
-            batch_draws = proposal.sample((sir_batch_size,)).detach()
+        for _ in range(num_batches):
+            batch_draws = proposal.sample((num_candidate_samples,)).detach()
             init_param_candidates.append(batch_draws)
             log_weights.append(potential_fn(batch_draws).detach())
         log_weights = torch.cat(log_weights)

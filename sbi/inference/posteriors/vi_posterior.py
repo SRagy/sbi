@@ -16,7 +16,6 @@ from sbi.samplers.vi import (
     check_variational_distribution,
     get_flow_builder,
     get_quality_metric,
-    get_sampling_method,
     get_VI_method,
     make_object_deepcopy_compatible,
     move_all_tensor_to_device,
@@ -275,23 +274,12 @@ class VIPosterior(NeuralPosterior):
         self,
         sample_shape: Shape = torch.Size(),
         x: Optional[Tensor] = None,
-        method: str = "naive",
         **kwargs,
     ) -> Tensor:
         """Samples from the variational posterior distribution.
 
         Args:
             sample_shape: Shape of samples
-            method: Sampling method, alternatively we can debias the approximation by
-                using simple and efficient sampling schemes. We support one of [naive,
-                sir].
-            kwargs: Hyperparameters for the sampling methods.
-                naive: Just samples from q, no parameters.
-                sir: Performs sampling importance resampling.
-                    `K`: Number of importance samples
-                    `num_samples_batch`: How many samples are drawn in parallel (For
-                        large K you may have to decrease this due to memory limitation).
-
 
         Returns:
             Samples from posterior.
@@ -299,14 +287,10 @@ class VIPosterior(NeuralPosterior):
         x = self._x_else_default_x(x)
         if self._trained_on is None or (x != self._trained_on).all():
             raise AttributeError(
-                f"The variational posterior was not fit using observation {x}."
-                "Please train."
+                f"The variational posterior was not fit on the specified `default_x` "
+                f"{x}. Please train using `posterior.train()`."
             )
-
-        self.potential_fn.set_x(x)
-        sampling_function = get_sampling_method(method)
-        num_samples = torch.Size(sample_shape).numel()
-        samples = sampling_function(num_samples, self.potential_fn, self.q, **kwargs)
+        samples = self.q.sample(torch.Size(sample_shape))
         return samples.reshape((*sample_shape, samples.shape[-1]))
 
     def log_prob(
@@ -502,8 +486,6 @@ class VIPosterior(NeuralPosterior):
             quality_control_metric: The metric of choice, we currently support [psis,
                 prop, prop_prior].
             N: Number of samples which is used to evaluate the metric.
-
-
         """
         quality_control_fn, quality_control_msg = get_quality_metric(
             quality_control_metric
@@ -556,7 +538,7 @@ class VIPosterior(NeuralPosterior):
                 `map`-attribute, and printed every `save_best_every`-th iteration.
                 Computing the best log-probability creates a significant overhead
                 (thus, the default is `10`.)
-            show_progress_bars: Whether or not to show a progressbar for sampling from
+            show_progress_bars: Whether to show a progressbar during sampling from
                 the posterior.
             force_update: Whether to re-calculate the MAP when x is unchanged and
                 have a cached value.

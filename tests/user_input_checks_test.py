@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Tuple
 
 import pytest
 import torch
@@ -14,7 +14,6 @@ from torch.distributions import Beta, Distribution, Gamma, MultivariateNormal, U
 
 from sbi.inference import SNPE_A, SNPE_C, simulate_for_sbi
 from sbi.inference.posteriors.direct_posterior import DirectPosterior
-from sbi.inference.posteriors.mcmc_posterior import MCMCPosterior
 from sbi.simulators.linear_gaussian import diagonal_linear_gaussian
 from sbi.utils import mcmc_transform, within_support
 from sbi.utils.torchutils import BoxUniform
@@ -161,10 +160,20 @@ def test_reinterpreted_batch_dim_prior():
         UserNumpyUniform(zeros(3), ones(3), return_numpy=False),
         UserNumpyUniform(zeros(3), ones(3), return_numpy=True),
         BoxUniform(zeros(3, dtype=torch.float64), ones(3, dtype=torch.float64)),
+        [
+            Uniform(zeros(1), ones(1)),
+            Uniform(zeros(1), ones(1)),
+        ],  # multiple independent prior
+        pytest.param(
+            [
+                UserNumpyUniform(zeros(3), ones(3), return_numpy=True),
+                UserNumpyUniform(zeros(3), ones(3), return_numpy=False),
+                Uniform(zeros(1), ones(1)),
+            ],  # combination of multiple independent custom priors
+        ),
     ),
 )
 def test_process_prior(prior):
-
     prior, parameter_dim, numpy_simulator = process_prior(
         prior,
         custom_prior_wrapper_kwargs=dict(lower_bound=zeros(3), upper_bound=ones(3)),
@@ -181,31 +190,38 @@ def test_process_prior(prior):
 
 
 @pytest.mark.parametrize(
-    "x, x_shape",
+    "x, x_shape, allow_iid",
     (
-        (ones(3), torch.Size([1, 3])),
-        (ones(1, 3), torch.Size([1, 3])),
+        (ones(3), torch.Size([1, 3]), False),
+        (ones(1, 3), torch.Size([1, 3]), False),
+        (ones(10, 3), torch.Size([1, 10, 3]), False),  # 2D data / iid SNPE
+        pytest.param(
+            ones(10, 3), None, False, marks=pytest.mark.xfail
+        ),  # 2D data / iid SNPE without x_shape
+        (ones(10, 10), torch.Size([1, 10]), True),  # iid likelihood based
     ),
 )
-def test_process_x(x, x_shape):
-    process_x(x, x_shape)
+def test_process_x(x, x_shape, allow_iid):
+    process_x(x, x_shape, allow_iid_x=allow_iid)
 
 
 @pytest.mark.parametrize(
-    "simulator, prior",
+    "simulator, prior, x_shape",
     (
-        (diagonal_linear_gaussian, BoxUniform(zeros(1), ones(1))),
-        (diagonal_linear_gaussian, BoxUniform(zeros(2), ones(2))),
-        (numpy_linear_gaussian, UserNumpyUniform(zeros(2), ones(2), True)),
-        (linear_gaussian_no_batch, BoxUniform(zeros(2), ones(2))),
+        (diagonal_linear_gaussian, BoxUniform(zeros(1), ones(1)), (1,)),
+        (diagonal_linear_gaussian, BoxUniform(zeros(2), ones(2)), (2,)),
+        (numpy_linear_gaussian, UserNumpyUniform(zeros(2), ones(2), True), (2,)),
+        (linear_gaussian_no_batch, BoxUniform(zeros(2), ones(2)), (2,)),
         pytest.param(
             list_simulator,
             BoxUniform(zeros(2), ones(2)),
+            (2,),
         ),
+        # test simulator with 2D data.
+        (lambda _: torch.randn(10, 2), BoxUniform(zeros(2), ones(2)), (10, 2)),
     ),
 )
-def test_process_simulator(simulator: Callable, prior: Distribution):
-
+def test_process_simulator(simulator: Callable, prior: Distribution, x_shape: Tuple):
     prior, theta_dim, prior_returns_numpy = process_prior(prior)
     simulator = process_simulator(simulator, prior, prior_returns_numpy)
 
@@ -216,6 +232,7 @@ def test_process_simulator(simulator: Callable, prior: Distribution):
     assert (
         x.shape[0] == n_batch
     ), "Processed simulator must return as many data points as parameters in batch."
+    assert x.shape[1:] == x_shape
 
 
 @pytest.mark.parametrize(
@@ -420,7 +437,6 @@ def test_independent_joint_shapes_and_samples(dists):
 
 
 def test_invalid_inputs():
-
     dists = [
         Gamma(ones(1), ones(1)),
         Uniform(zeros(1), ones(1)),
@@ -460,7 +476,6 @@ def test_invalid_inputs():
     ],
 )
 def test_passing_custom_density_estimator(arg):
-
     x_numel = 2
     y_numel = 2
     hidden_features = 10

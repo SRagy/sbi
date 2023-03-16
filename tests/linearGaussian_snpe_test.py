@@ -12,7 +12,7 @@ from torch.distributions import MultivariateNormal
 
 from sbi import analysis as analysis
 from sbi import utils as utils
-from sbi.analysis import ConditionedMDN, conditonal_potential
+from sbi.analysis import ConditionedMDN, conditional_potential
 from sbi.inference import (
     SNPE_A,
     SNPE_B,
@@ -30,8 +30,10 @@ from sbi.simulators.linear_gaussian import (
     samples_true_posterior_linear_gaussian_uniform_prior,
     true_posterior_linear_gaussian_mvn_prior,
 )
-from tests.sbiutils_test import conditional_of_mvn
-from tests.test_utils import (
+from sbi.utils import RestrictedPrior, get_density_thresholder
+
+from .sbiutils_test import conditional_of_mvn
+from .test_utils import (
     check_c2st,
     get_dkl_gaussian_prior,
     get_normalization_uniform_prior,
@@ -143,12 +145,58 @@ def test_c2st_snpe_on_linearGaussian(
         assert ((map_ - ones(num_dim)) ** 2).sum() < 0.5
 
 
-def test_c2st_snpe_on_linearGaussian_different_dims():
+@pytest.mark.slow
+@pytest.mark.parametrize("density_estimtor", ["mdn", "maf", "maf_rqs", "nsf"])
+def test_density_estimators_on_linearGaussian(density_estimtor):
+    """Test SNPE with different density estimators on linear Gaussian example."""
+
+    theta_dim = 4
+    x_dim = 4
+
+    x_o = zeros(1, x_dim)
+    num_samples = 1000
+    num_simulations = 2000
+
+    # likelihood_mean will be likelihood_shift+theta
+    likelihood_shift = -1.0 * ones(x_dim)
+    likelihood_cov = 0.3 * eye(x_dim)
+
+    prior_mean = zeros(theta_dim)
+    prior_cov = eye(theta_dim)
+
+    prior = MultivariateNormal(loc=prior_mean, covariance_matrix=prior_cov)
+    gt_posterior = true_posterior_linear_gaussian_mvn_prior(
+        x_o, likelihood_shift, likelihood_cov, prior_mean, prior_cov
+    )
+    target_samples = gt_posterior.sample((num_samples,))
+
+    simulator, prior = prepare_for_sbi(
+        lambda theta: linear_gaussian(theta, likelihood_shift, likelihood_cov), prior
+    )
+
+    inference = SNPE_C(prior, density_estimator=density_estimtor)
+
+    theta, x = simulate_for_sbi(
+        simulator, prior, num_simulations, simulation_batch_size=1000
+    )
+    posterior_estimator = inference.append_simulations(theta, x).train(
+        training_batch_size=100
+    )
+    posterior = DirectPosterior(
+        prior=prior, posterior_estimator=posterior_estimator
+    ).set_default_x(x_o)
+    samples = posterior.sample((num_samples,))
+
+    # Compute the c2st and assert it is near chance level of 0.5.
+    check_c2st(samples, target_samples, alg=f"snpe_{density_estimtor}")
+
+
+def test_c2st_snpe_on_linearGaussian_different_dims(density_estimator="maf"):
     """Test whether SNPE B/C infer well a simple example with available ground truth.
 
-    This example has different number of parameters theta than number of x. Also
-    this implicitly tests simulation_batch_size=1. It also impleictly tests whether the
-    prior can be `None` and whether we can stop and resume training.
+    This test uses a linear Gaussian example with different number of parameters and
+    data dimensions. It tests different density estimators. Additionally, it implicitly
+    tests whether the prior can be `None` and whether we can stop and resume training.
 
     """
 
@@ -183,7 +231,9 @@ def test_c2st_snpe_on_linearGaussian_different_dims():
         prior,
     )
     # Test whether prior can be `None`.
-    inference = SNPE_C(prior=None, density_estimator="maf", show_progress_bars=False)
+    inference = SNPE_C(
+        prior=None, density_estimator=density_estimator, show_progress_bars=False
+    )
 
     # type: ignore
     theta, x = simulate_for_sbi(simulator, prior, 2000, simulation_batch_size=1)
@@ -218,6 +268,8 @@ def test_c2st_snpe_on_linearGaussian_different_dims():
         ),
         "snpe_c",
         "snpe_c_non_atomic",
+        "tsnpe_rejection",
+        "tsnpe_sir",
     ),
 )
 def test_c2st_multi_round_snpe_on_linearGaussian(method_str: str):
@@ -304,6 +356,22 @@ def test_c2st_multi_round_snpe_on_linearGaussian(method_str: str):
             _ = inference.train(max_num_epochs=200, final_round=final_round)
             posterior = inference.build_posterior().set_default_x(x_o)
             proposal = posterior
+    elif method_str.startswith("tsnpe"):
+        sample_method = "rejection" if method_str == "tsnpe_rejection" else "sir"
+        inference = SNPE_C(**creation_args)
+        theta, x = simulate_for_sbi(simulator, prior, 900, simulation_batch_size=50)
+        posterior_estimator = inference.append_simulations(theta, x).train()
+        posterior1 = DirectPosterior(
+            prior=prior, posterior_estimator=posterior_estimator
+        ).set_default_x(x_o)
+        accept_reject_fn = get_density_thresholder(posterior1, quantile=1e-4)
+        proposal = RestrictedPrior(
+            prior, accept_reject_fn, posterior=posterior1, sample_with=sample_method
+        )
+        theta = proposal.sample((1000,))
+        x = simulator(theta)
+        _ = inference.append_simulations(theta, x).train(force_first_round_loss=True)
+        posterior = inference.build_posterior().set_default_x(x_o)
 
     samples = posterior.sample((num_samples,))
 
@@ -374,6 +442,48 @@ def test_api_snpe_c_posterior_correction(sample_with, mcmc_method, prior_str):
     _ = posterior.log_prob(samples)
 
 
+# Testing rejection and mcmc sampling methods.
+@pytest.mark.parametrize(
+    "force_first_round_loss, pass_proposal_to_append",
+    (
+        (True, True),
+        (True, False),
+        (False, True),
+        pytest.param(False, False, marks=pytest.mark.xfail),
+    ),
+)
+def test_api_force_first_round_loss(
+    force_first_round_loss: bool, pass_proposal_to_append: bool
+):
+    """Test that leakage correction applied to sampling works, with both MCMC and
+    rejection.
+
+    """
+
+    num_dim = 2
+    x_o = zeros(1, num_dim)
+
+    # likelihood_mean will be likelihood_shift+theta
+    likelihood_shift = -1.0 * ones(num_dim)
+    likelihood_cov = 0.3 * eye(num_dim)
+    prior = utils.BoxUniform(-2.0 * ones(num_dim), 2.0 * ones(num_dim))
+
+    simulator, prior = prepare_for_sbi(
+        lambda theta: linear_gaussian(theta, likelihood_shift, likelihood_cov), prior
+    )
+    inference = SNPE_C(prior, show_progress_bars=False)
+
+    proposal = prior
+    for _ in range(2):
+        train_proposal = proposal if pass_proposal_to_append else None
+        theta, x = simulate_for_sbi(simulator, proposal, 1000)
+        _ = inference.append_simulations(theta, x, proposal=train_proposal).train(
+            force_first_round_loss=force_first_round_loss, max_num_epochs=2
+        )
+        posterior = inference.build_posterior().set_default_x(x_o)
+        proposal = posterior
+
+
 @pytest.mark.slow
 def test_sample_conditional():
     """
@@ -426,7 +536,11 @@ def test_sample_conditional():
     potential_fn, theta_transform = posterior_estimator_based_potential(
         posterior_estimator, prior=prior, x_o=x_o
     )
-    (conditioned_potential_fn, restricted_tf, restricted_prior,) = conditonal_potential(
+    (
+        conditioned_potential_fn,
+        restricted_tf,
+        restricted_prior,
+    ) = conditional_potential(
         potential_fn=potential_fn,
         theta_transform=theta_transform,
         prior=prior,
@@ -581,3 +695,25 @@ def test_example_posterior(snpe_method: type):
         prior=prior, posterior_estimator=posterior_estimator
     ).set_default_x(x_o)
     assert posterior is not None
+
+
+@pytest.mark.slow
+def test_multiround_mog_training():
+    "Test whether multi-round training with MDNs is stable. See #669."
+
+    def simulator(theta):
+        return theta + torch.randn(theta.shape)
+
+    dim = 15
+    x_o = torch.zeros((1, dim))
+
+    prior = utils.BoxUniform(-3 * torch.ones(dim), 3 * torch.ones(dim))
+
+    proposal = prior
+    inference = SNPE_C(prior, density_estimator="mdn")
+
+    for _ in range(3):
+        theta, x = simulate_for_sbi(simulator, proposal, 200)
+        _ = inference.append_simulations(theta, x, proposal=proposal).train()
+        posterior = inference.build_posterior().set_default_x(x_o)
+        proposal = posterior

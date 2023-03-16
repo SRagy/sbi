@@ -1,10 +1,15 @@
 # flake8: noqa
+from sbi.utils.analysis_utils import get_1d_marginal_peaks_from_kde
 from sbi.utils.conditional_density_utils import extract_and_transform_mog
 from sbi.utils.get_nn_models import classifier_nn, likelihood_nn, posterior_nn
 from sbi.utils.io import get_data_root, get_log_root, get_project_root
 from sbi.utils.kde import KDEWrapper, get_kde
 from sbi.utils.potentialutils import pyro_potential_wrapper, transformed_potential
-from sbi.utils.restriction_estimator import RestrictedPrior, RestrictionEstimator
+from sbi.utils.restriction_estimator import (
+    RestrictedPrior,
+    RestrictionEstimator,
+    get_density_thresholder,
+)
 from sbi.utils.sbiutils import (
     batched_mixture_mv,
     batched_mixture_vmv,
@@ -21,11 +26,11 @@ from sbi.utils.sbiutils import (
     match_theta_and_x_batch_shapes,
     mcmc_transform,
     mog_log_prob,
+    nle_nre_apt_msg_on_invalid_x,
+    npe_msg_on_invalid_x,
     standardizing_net,
     standardizing_transform,
     warn_if_zscoring_changes_data,
-    warn_on_invalid_x,
-    warn_on_invalid_x_for_snpec_leakage,
     within_support,
     x_shape_from_simulation,
     z_score_parser,

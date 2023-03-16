@@ -19,6 +19,7 @@ def likelihood_estimator_based_potential(
     likelihood_estimator: nn.Module,
     prior: Distribution,
     x_o: Optional[Tensor],
+    enable_transform: bool = True,
 ) -> Tuple[Callable, TorchTransform]:
     r"""Returns potential $\log(p(x_o|\theta)p(\theta))$ for likelihood-based methods.
 
@@ -29,6 +30,8 @@ def likelihood_estimator_based_potential(
         likelihood_estimator: The neural network modelling the likelihood.
         prior: The prior distribution.
         x_o: The observed data at which to evaluate the likelihood.
+        enable_transform: Whether to transform parameters to unconstrained space.
+             When False, an identity transform will be returned for `theta_transform`.
 
     Returns:
         The potential function $p(x_o|\theta)p(\theta)$ and a transformation that maps
@@ -40,7 +43,9 @@ def likelihood_estimator_based_potential(
     potential_fn = LikelihoodBasedPotential(
         likelihood_estimator, prior, x_o, device=device
     )
-    theta_transform = mcmc_transform(prior, device=device)
+    theta_transform = mcmc_transform(
+        prior, device=device, enable_transform=enable_transform
+    )
 
     return potential_fn, theta_transform
 
@@ -182,7 +187,6 @@ class MixedLikelihoodBasedPotential(LikelihoodBasedPotential):
         super().__init__(likelihood_estimator, prior, x_o, device)
 
     def __call__(self, theta: Tensor, track_gradients: bool = True) -> Tensor:
-
         # Calculate likelihood in one batch.
         with torch.set_grad_enabled(track_gradients):
             # Call the specific log prob method of the mixed likelihood estimator as

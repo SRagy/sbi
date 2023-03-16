@@ -112,7 +112,6 @@ class ScipyPytorchWrapper(Distribution):
         lower_bound: Optional[Tensor] = None,
         upper_bound: Optional[Tensor] = None,
     ):
-
         self.custom_arg_constraints = arg_constraints
         self.prior_scipy = prior_scipy
         self.return_type = return_type
@@ -266,11 +265,13 @@ class MultipleIndependent(Distribution):
         """Check type and shape of a single input distribution."""
 
         assert not isinstance(
-            dist, MultipleIndependent
+            dist, (MultipleIndependent, Sequence)
         ), "Nesting of combined distributions is not possible."
         assert isinstance(
             dist, Distribution
-        ), "Distribution must be a PyTorch distribution."
+        ), """priors passed to MultipleIndependent must be PyTorch distributions. Make
+            sure to process custom priors individually using process_prior before
+            passing them in a list to process_prior."""
         # Make sure batch shape is smaller or equal to 1.
         assert dist.batch_shape in (
             torch.Size([1]),
@@ -287,7 +288,6 @@ class MultipleIndependent(Distribution):
         """
 
     def sample(self, sample_shape=torch.Size()) -> Tensor:
-
         # Sample from every sub distribution and concatenate samples.
         sample = torch.cat([d.sample(sample_shape) for d in self.dists], dim=-1)
 
@@ -300,7 +300,6 @@ class MultipleIndependent(Distribution):
         return sample
 
     def log_prob(self, value) -> Tensor:
-
         value = self._prepare_value(value)
 
         # Evaluate value per distribution, taking into account that individual

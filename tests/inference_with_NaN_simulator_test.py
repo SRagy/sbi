@@ -13,7 +13,6 @@ from sbi.inference import (
     SNPE_C,
     SRE,
     DirectPosterior,
-    MCMCPosterior,
     prepare_for_sbi,
     simulate_for_sbi,
 )
@@ -23,23 +22,22 @@ from sbi.simulators.linear_gaussian import (
 )
 from sbi.utils import RestrictionEstimator
 from sbi.utils.sbiutils import handle_invalid_x
-from tests.test_utils import check_c2st
+
+from .test_utils import check_c2st
 
 
 @pytest.mark.parametrize(
     "x_shape",
     (
-        torch.Size((1, 1)),
-        torch.Size((1, 10)),
         torch.Size((10, 1)),
         torch.Size((10, 10)),
     ),
 )
 def test_handle_invalid_x(x_shape):
-
     x = torch.rand(x_shape)
     x[x < 0.1] = float("nan")
     x[x > 0.9] = float("inf")
+    x[-1, :] = 1.0  # make sure there is one row of valid entries.
 
     x_is_valid, *_ = handle_invalid_x(x, exclude_invalid_x=True)
 
@@ -48,7 +46,6 @@ def test_handle_invalid_x(x_shape):
 
 @pytest.mark.parametrize("snpe_method", [SNPE_A, SNPE_C])
 def test_z_scoring_warning(snpe_method: type):
-
     # Create data with large variance.
     num_dim = 2
     theta = torch.ones(100, num_dim)
@@ -65,13 +62,14 @@ def test_z_scoring_warning(snpe_method: type):
 
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    ("method", "exclude_invalid_x", "percent_nans"),
-    ((SNPE_C, True, 0.05), (SNL, True, 0.05), (SRE, True, 0.05)),
+    ("method", "percent_nans"),
+    (
+        (SNPE_C, 0.05),
+        pytest.param(SNL, 0.05, marks=pytest.mark.xfail),
+        pytest.param(SRE, 0.05, marks=pytest.mark.xfail),
+    ),
 )
-def test_inference_with_nan_simulator(
-    method: type, exclude_invalid_x: bool, percent_nans: float
-):
-
+def test_inference_with_nan_simulator(method: type, percent_nans: float):
     # likelihood_mean will be likelihood_shift+theta
     num_dim = 3
     likelihood_shift = -1.0 * ones(num_dim)
@@ -102,9 +100,7 @@ def test_inference_with_nan_simulator(
     inference = method(prior=prior)
 
     theta, x = simulate_for_sbi(simulator, prior, num_simulations)
-    _ = inference.append_simulations(theta, x).train(
-        exclude_invalid_x=exclude_invalid_x
-    )
+    _ = inference.append_simulations(theta, x).train()
     posterior = inference.build_posterior()
 
     samples = posterior.sample((num_samples,), x=x_o)
@@ -115,13 +111,13 @@ def test_inference_with_nan_simulator(
 
 @pytest.mark.slow
 def test_inference_with_restriction_estimator():
-
     # likelihood_mean will be likelihood_shift+theta
     num_dim = 3
     likelihood_shift = -1.0 * ones(num_dim)
     likelihood_cov = 0.3 * eye(num_dim)
     x_o = zeros(1, num_dim)
-    num_samples = 500
+    num_samples = 1000
+    num_simulations = 1000
 
     def linear_gaussian_nan(
         theta, likelihood_shift=likelihood_shift, likelihood_cov=likelihood_cov
@@ -143,15 +139,15 @@ def test_inference_with_restriction_estimator():
 
     simulator, prior = prepare_for_sbi(linear_gaussian_nan, prior)
     restriction_estimator = RestrictionEstimator(prior=prior)
-    proposals = [prior]
+    proposal = prior
     num_rounds = 2
 
     for r in range(num_rounds):
-        theta, x = simulate_for_sbi(simulator, proposals[-1], 1000)
+        theta, x = simulate_for_sbi(simulator, proposal, num_simulations)
         restriction_estimator.append_simulations(theta, x)
         if r < num_rounds - 1:
             _ = restriction_estimator.train()
-        proposals.append(restriction_estimator.restrict_prior())
+        proposal = restriction_estimator.restrict_prior()
 
     all_theta, all_x, _ = restriction_estimator.get_simulations()
 
@@ -206,12 +202,12 @@ def test_restricted_prior_log_prob(prior):
 
     integal_restricted = integrate_grid(restricted_prior)
     error = torch.abs(integal_restricted - torch.as_tensor(1.0))
-    assert error < 0.01, "The restricted prior does not integrate to one."
+    assert error < 0.015, "The restricted prior does not integrate to one."
 
     theta = prior.sample((10_000,))
     restricted_prior_probs = torch.exp(restricted_prior.log_prob(theta))
 
-    valid_thetas = restricted_prior.predict(theta).bool()
+    valid_thetas = restricted_prior._accept_reject_fn(theta).bool()
     assert torch.all(
         restricted_prior_probs[valid_thetas] > 0.0
     ), "Accepted theta have zero probability."

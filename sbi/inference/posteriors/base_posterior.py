@@ -3,7 +3,6 @@
 
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Optional, Union
-from warnings import warn
 
 import torch
 import torch.distributions.transforms as torch_tf
@@ -37,6 +36,7 @@ class NeuralPosterior(ABC):
                 Allows to perform, e.g. MCMC in unconstrained space.
             device: Training device, e.g., "cpu", "cuda" or "cuda:0". If None,
                 `potential_fn.device` is used.
+            x_shape: Shape of the observed data.
         """
 
         # Ensure device string.
@@ -132,6 +132,8 @@ class NeuralPosterior(ABC):
 
     def _x_else_default_x(self, x: Optional[Array]) -> Tensor:
         if x is not None:
+            # New x, reset posterior sampler.
+            self._posterior_sampler = None
             return process_x(
                 x, x_shape=self._x_shape, allow_iid_x=self.potential_fn.allow_iid_x
             )
@@ -227,7 +229,6 @@ class NeuralPosterior(ABC):
         return desc
 
     def __str__(self):
-
         desc = (
             f"Posterior conditional density p(θ|x) of type {self.__class__.__name__}. "
             f"{self._purpose}"

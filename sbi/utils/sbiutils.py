@@ -2,10 +2,12 @@
 # under the Affero General Public License v3, see <https://www.gnu.org/licenses/>.
 
 import logging
+import random
 import warnings
 from math import pi
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
 
+import numpy as np
 import pyknos.nflows.transforms as transforms
 import torch
 import torch.distributions.transforms as torch_tf
@@ -214,13 +216,19 @@ def standardizing_net(
             t_std = torch.std(batch_t[is_valid_t], dim=0)
             t_std[t_std < min_std] = min_std
     else:
-        t_std = 1
+        t_std = torch.ones(1)
         logging.warning(
             """Using a one-dimensional batch will instantiate a Standardize transform
             with (mean, std) parameters which are not representative of the data. We
-            allow this behavior because you might be loading a pre-trained. If this is
-            not the case, please be sure to use a larger batch."""
+            allow this behavior because you might be loading a pre-trained net.
+            If this is not the case, please be sure to use a larger batch."""
         )
+
+    nan_in_stats = torch.logical_or(torch.isnan(t_mean).any(), torch.isnan(t_std).any())
+    assert not nan_in_stats, """Training data mean or std for standardizing net must not
+                            contain NaNs. In case you are encoding missing trials with
+                            NaNs, consider setting z_score_x='none' to disable 
+                            z-scoring."""
 
     return Standardize(t_mean, t_std)
 
@@ -241,6 +249,8 @@ def handle_invalid_x(
     # Squeeze to cover all dimensions in case of multidimensional x.
     x = x.reshape(batch_size, -1)
 
+    # TODO: add option to allow for NaNs in certain dimensions, e.g., to encode varying
+    # numbers of trials.
     x_is_nan = torch.isnan(x).any(dim=1)
     x_is_inf = torch.isinf(x).any(dim=1)
     num_nans = int(x_is_nan.sum().item())
@@ -251,11 +261,24 @@ def handle_invalid_x(
     else:
         is_valid_x = ones(batch_size, dtype=torch.bool)
 
+    assert (
+        is_valid_x.sum() > 0
+    ), """No valid data entries left after excluding NaNs and Infs. In case you are
+        encoding missing trials with NaNs consider setting exclude_invalid_x=False and
+        z_score_x = 'none' to disable z-scoring."""
+
     return is_valid_x, num_nans, num_infs
 
 
-def warn_on_invalid_x(num_nans: int, num_infs: int, exclude_invalid_x: bool) -> None:
-    """Warn if there are NaNs or Infs. Warning text depends on `exclude_invalid_x`."""
+def npe_msg_on_invalid_x(
+    num_nans: int, num_infs: int, exclude_invalid_x: bool, algorithm: str
+) -> None:
+    """Warn if there are NaNs or Infs, appropriate to single-round NPE.
+
+    NPE allows to discard invalid simulations. Thus, we simply warn if invalid
+    simulations are found (and they are removed from the dataset in
+    `append_simulations()`.
+    """
 
     if num_nans + num_infs > 0:
         if exclude_invalid_x:
@@ -266,7 +289,37 @@ def warn_on_invalid_x(num_nans: int, num_infs: int, exclude_invalid_x: bool) -> 
         else:
             logging.warning(
                 f"Found {num_nans} NaN simulations and {num_infs} Inf simulations. "
-                "Training might fail. Consider setting `exclude_invalid_x=True`."
+                "They are not excluded from training due to `exclude_invalid_x=False`."
+                "Training will likely fail, we strongly recommend "
+                f"`exclude_invalid_x=True` for {algorithm}."
+            )
+
+
+def nle_nre_apt_msg_on_invalid_x(
+    num_nans: int, num_infs: int, exclude_invalid_x: bool, algorithm: str
+) -> None:
+    """Warn or raise if there are NaNs or Infs, appropriate to SNLE, SNRE, or APT.
+
+    This will raise an error in the default case of `exclude_invalid_x=False` since
+    SNLE/SNRE/APT do not allow to discard invalid simulations (Glöckler et al. 2021).
+    If `exclude_invalid_x` has explicitly been set to `True` by the user, this
+    function will give a warning about the systematic error.
+    """
+
+    if num_nans + num_infs > 0:
+        if exclude_invalid_x:
+            logging.warn(
+                f"Found {num_nans} NaN simulations and {num_infs} Inf simulations."
+                f"These will be discarded from training due to "
+                f"`exclude_invalid_x=True`. Please be aware that this gives "
+                f"systematically wrong results for {algorithm} and is only recommended "
+                f"for expert users."
+            )
+        else:
+            raise ValueError(
+                f"Found {num_nans} NaN simulations and {num_infs} Inf simulations."
+                f"{algorithm} does not allow invalid simulations."
+                f"Replace the invalid values with an unreasonably low or high value."
             )
 
 
@@ -281,20 +334,6 @@ def warn_on_iid_x(num_trials):
             same underlying (unknown) parameter. The resulting posterior will be with
             respect to entire batch, i.e,. p(theta | X)."""
         )
-
-
-def warn_on_invalid_x_for_snpec_leakage(
-    num_nans: int, num_infs: int, exclude_invalid_x: bool, algorithm: str, round_: int
-) -> None:
-    """Give a dedicated warning about invalid data for multi-round SNPE-C"""
-
-    if num_nans + num_infs > 0 and exclude_invalid_x:
-        if algorithm == "SNPE_C" and round_ > 0:
-            logging.warning(
-                "When invalid simulations are excluded, multi-round SNPE-C"
-                " can `leak` into the regions where parameters led to"
-                " invalid simulations. This can lead to poor results."
-            )
 
 
 def check_warn_and_setstate(
@@ -572,7 +611,8 @@ def mcmc_transform(
             to infer the `mean` and `stddev` of the prior used for z-scoring. Unused if
             the prior has bounded support or when the prior has `mean` and `stddev`
             attributes.
-        enable_transform: Whether or not to use a transformation during MCMC.
+        enable_transform: Whether to transform parameters to unconstrained space.
+            When False, an identity transform will be returned for `theta_transform`.
 
     Returns: A transformation that transforms whose `forward()` maps from unconstrained
         (or z-scored) to constrained (or non-z-scored) space.
@@ -615,10 +655,17 @@ def mcmc_transform(
             transform = biject_to(prior.support)
         # For all other cases build affine transform with mean and std.
         else:
-            if hasattr(prior, "mean") and hasattr(prior, "stddev"):
+            try:
                 prior_mean = prior.mean.to(device)
                 prior_std = prior.stddev.to(device)
-            else:
+            except (NotImplementedError, AttributeError):
+                # NotImplementedError -> Distribution that inherits from torch dist but
+                # does not implement mean, e.g., TransformedDistribution.
+                # AttributeError -> Custom distribution that has no mean/std attribute.
+                warnings.warn(
+                    """The passed prior has no mean or stddev attribute, estimating
+                    them from samples to build affimed standardizing transform."""
+                )
                 theta = prior.sample(torch.Size((num_prior_samples_for_zscoring,)))
                 prior_mean = theta.mean(dim=0).to(device)
                 prior_std = theta.std(dim=0).to(device)
@@ -765,7 +812,7 @@ def gradient_ascent(
             `map`-attribute, and printed every `save_best_every`-th iteration.
             Computing the best log-probability creates a significant overhead (thus,
             the default is `10`.)
-        show_progress_bars: Whether or not to show a progressbar for the optimization.
+        show_progress_bars: Whether to show a progressbar for the optimization.
         interruption_note: The message printed when the user interrupts the
             optimization.
 
@@ -807,9 +854,7 @@ def gradient_ascent(
     # Try-except block in case the user interrupts the program and wants to fall
     # back on the last saved `.map_`. We want to avoid a long error-message here.
     try:
-
         while iter_ < num_iter:
-
             optimizer.zero_grad()
             probs = potential_fn(theta_transform.inv(optimize_inits)).squeeze()
             loss = -probs.sum()
@@ -852,3 +897,17 @@ def gradient_ascent(
         return argmax_, max_val  # type: ignore
 
     return theta_transform.inv(best_theta_overall), max_val  # type: ignore
+
+
+def seed_all_backends(seed: Optional[int] = None) -> None:
+    """Sets all python, numpy and pytorch seeds."""
+
+    if seed is None:
+        seed = int(torch.randint(1_000_000, size=(1,)))
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True  # type: ignore
+    torch.backends.cudnn.benchmark = False  # type: ignore

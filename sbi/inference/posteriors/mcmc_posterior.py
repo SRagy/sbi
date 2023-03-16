@@ -1,12 +1,16 @@
 # This file is part of sbi, a toolkit for simulation-based inference. sbi is licensed
 # under the Affero General Public License v3, see <https://www.gnu.org/licenses/>.
 from functools import partial
-from typing import Any, Callable, Dict, Optional, Union
+from math import ceil
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 from warnings import warn
 
+import arviz as az
 import torch
 import torch.distributions.transforms as torch_tf
+from arviz.data import InferenceData
 from joblib import Parallel, delayed
+from numpy import ndarray
 from pyro.infer.mcmc import HMC, NUTS
 from pyro.infer.mcmc.api import MCMC
 from torch import Tensor
@@ -17,13 +21,15 @@ from sbi.inference.posteriors.base_posterior import NeuralPosterior
 from sbi.samplers.mcmc import (
     IterateParameters,
     Slice,
+    SliceSamplerSerial,
+    SliceSamplerVectorized,
     proposal_init,
-    sir,
-    slice_np_parallized,
+    resample_given_potential_fn,
+    sir_init,
 )
 from sbi.simulators.simutils import tqdm_joblib
 from sbi.types import Shape, TorchTransform
-from sbi.utils import pyro_potential_wrapper, transformed_potential
+from sbi.utils import pyro_potential_wrapper, tensor2numpy, transformed_potential
 from sbi.utils.torchutils import ensure_theta_batched
 
 
@@ -42,8 +48,9 @@ class MCMCPosterior(NeuralPosterior):
         thin: int = 10,
         warmup_steps: int = 10,
         num_chains: int = 1,
-        init_strategy: str = "sir",
-        init_strategy_num_candidates: int = 1_000,
+        init_strategy: str = "resample",
+        init_strategy_parameters: Dict[str, Any] = {},
+        init_strategy_num_candidates: Optional[int] = None,
         num_workers: int = 1,
         device: Optional[str] = None,
         x_shape: Optional[torch.Size] = None,
@@ -67,10 +74,17 @@ class MCMCPosterior(NeuralPosterior):
                 init locations from `proposal`, whereas `sir` will use Sequential-
                 Importance-Resampling (SIR). SIR initially samples
                 `init_strategy_num_candidates` from the `proposal`, evaluates all of
-                them under the `potential_fn`, and then resamples the initial locations
-                with weights proportional to the `potential_fn`-value.
+                them under the `potential_fn` and `proposal`, and then resamples the
+                initial locations with weights proportional to `exp(potential_fn -
+                proposal.log_prob`. `resample` is the same as `sir` but
+                uses `exp(potential_fn)` as weights.
+            init_strategy_parameters: Dictionary of keyword arguments passed to the
+                init strategy, e.g., for `init_strategy=sir` this could be
+                `num_candidate_samples`, i.e., the number of candidates to to find init
+                locations (internal default is `1000`), or `device`.
             init_strategy_num_candidates: Number of candidates to to find init
-                locations in `init_strategy=sir`.
+                 locations in `init_strategy=sir` (deprecated, use
+                 init_strategy_parameters instead).
             num_workers: number of cpu cores used to parallelize mcmc
             device: Training device, e.g., "cpu", "cuda" or "cuda:0". If None,
                 `potential_fn.device` is used.
@@ -91,8 +105,21 @@ class MCMCPosterior(NeuralPosterior):
         self.warmup_steps = warmup_steps
         self.num_chains = num_chains
         self.init_strategy = init_strategy
-        self.init_strategy_num_candidates = init_strategy_num_candidates
+        self.init_strategy_parameters = init_strategy_parameters
         self.num_workers = num_workers
+        self._posterior_sampler = None
+        # Hardcode parameter name to reduce clutter kwargs.
+        self.param_name = "theta"
+
+        if init_strategy_num_candidates is not None:
+            warn(
+                """Passing `init_strategy_num_candidates` is deprecated as of sbi
+                v0.19.0. Instead, use e.g.,
+                `init_strategy_parameters={"num_candidate_samples": 1000}`"""
+            )
+            self.init_strategy_parameters[
+                "num_candidate_samples"
+            ] = init_strategy_num_candidates
 
         self.potential_ = self._prepare_potential(method)
 
@@ -110,6 +137,11 @@ class MCMCPosterior(NeuralPosterior):
     def mcmc_method(self, method: str) -> None:
         """See `set_mcmc_method`."""
         self.set_mcmc_method(method)
+
+    @property
+    def posterior_sampler(self):
+        """Returns sampler created by `sample`."""
+        return self._posterior_sampler
 
     def set_mcmc_method(self, method: str) -> "NeuralPosterior":
         """Sets sampling method to for MCMC and returns `NeuralPosterior`.
@@ -159,13 +191,14 @@ class MCMCPosterior(NeuralPosterior):
         warmup_steps: Optional[int] = None,
         num_chains: Optional[int] = None,
         init_strategy: Optional[str] = None,
+        init_strategy_parameters: Optional[Dict[str, Any]] = None,
         init_strategy_num_candidates: Optional[int] = None,
         mcmc_parameters: Dict = {},
         mcmc_method: Optional[str] = None,
         sample_with: Optional[str] = None,
         num_workers: Optional[int] = None,
         show_progress_bars: bool = True,
-    ) -> Tensor:
+    ) -> Union[Tensor, Tuple[Tensor, InferenceData]]:
         r"""Return samples from posterior distribution $p(\theta|x)$ with MCMC.
 
         Check the `__init__()` method for a description of all arguments as well as
@@ -195,11 +228,20 @@ class MCMCPosterior(NeuralPosterior):
         num_chains = self.num_chains if num_chains is None else num_chains
         init_strategy = self.init_strategy if init_strategy is None else init_strategy
         num_workers = self.num_workers if num_workers is None else num_workers
-        init_strategy_num_candidates = (
-            self.init_strategy_num_candidates
-            if init_strategy_num_candidates is None
-            else init_strategy_num_candidates
+        init_strategy_parameters = (
+            self.init_strategy_parameters
+            if init_strategy_parameters is None
+            else init_strategy_parameters
         )
+        if init_strategy_num_candidates is not None:
+            warn(
+                """Passing `init_strategy_num_candidates` is deprecated as of sbi
+                v0.19.0. Instead, use e.g.,
+                `init_strategy_parameters={"num_candidate_samples": 1000}`"""
+            )
+            self.init_strategy_parameters[
+                "num_candidate_samples"
+            ] = init_strategy_num_candidates
         if sample_with is not None:
             raise ValueError(
                 f"You set `sample_with={sample_with}`. As of sbi v0.18.0, setting "
@@ -228,13 +270,14 @@ class MCMCPosterior(NeuralPosterior):
         warmup_steps = _maybe_use_dict_entry(warmup_steps, "warmup_steps", m_p)
         num_chains = _maybe_use_dict_entry(num_chains, "num_chains", m_p)
         init_strategy = _maybe_use_dict_entry(init_strategy, "init_strategy", m_p)
-        init_strategy_num_candidates = _maybe_use_dict_entry(
-            init_strategy_num_candidates, "init_strategy_num_candidates", m_p
-        )
         self.potential_ = self._prepare_potential(method)  # type: ignore
 
         initial_params = self._get_initial_params(
-            init_strategy, num_chains, num_workers, show_progress_bars  # type: ignore
+            init_strategy,  # type: ignore
+            num_chains,  # type: ignore
+            num_workers,
+            show_progress_bars,
+            **init_strategy_parameters,
         )
         num_samples = torch.Size(sample_shape).numel()
 
@@ -261,11 +304,12 @@ class MCMCPosterior(NeuralPosterior):
                     warmup_steps=warmup_steps,  # type: ignore
                     num_chains=num_chains,
                     show_progress_bars=show_progress_bars,
-                ).detach()
+                )
             else:
                 raise NameError
 
         samples = self.theta_transform.inv(transformed_samples)
+
         return samples.reshape((*sample_shape, -1))  # type: ignore
 
     def _build_mcmc_init_fn(
@@ -283,9 +327,10 @@ class MCMCPosterior(NeuralPosterior):
             potential_fn: Potential function that the candidate samples are weighted
                 with.
             init_strategy: Specifies the initialization method. Either of
-                [`proposal`|`sir`|`latest_sample`].
+                [`proposal`|`sir`|`resample`|`latest_sample`].
             kwargs: Passed on to init function. This way, init specific keywords can
-                be set through `mcmc_parameters`. Unused arguments should be absorbed.
+                be set through `mcmc_parameters`. Unused arguments will be absorbed by
+                the intitialization method.
 
         Returns: Initialization function.
         """
@@ -298,7 +343,18 @@ class MCMCPosterior(NeuralPosterior):
                 )
             return lambda: proposal_init(proposal, transform=transform, **kwargs)
         elif init_strategy == "sir":
-            return lambda: sir(proposal, potential_fn, transform=transform, **kwargs)
+            warn(
+                "As of sbi v0.19.0, the behavior of the SIR initialization for MCMC "
+                "has changed. If you wish to restore the behavior of sbi v0.18.0, set "
+                "`init_strategy='resample'.`"
+            )
+            return lambda: sir_init(
+                proposal, potential_fn, transform=transform, **kwargs
+            )
+        elif init_strategy == "resample":
+            return lambda: resample_given_potential_fn(
+                proposal, potential_fn, transform=transform, **kwargs
+            )
         elif init_strategy == "latest_sample":
             latest_sample = IterateParameters(self._mcmc_init_params, **kwargs)
             return latest_sample
@@ -311,6 +367,7 @@ class MCMCPosterior(NeuralPosterior):
         num_chains: int,
         num_workers: int,
         show_progress_bars: bool,
+        **kwargs,
     ) -> Tensor:
         """Return initial parameters for MCMC obtained with given init strategy.
 
@@ -318,10 +375,11 @@ class MCMCPosterior(NeuralPosterior):
 
         Args:
             init_strategy: Specifies the initialization method. Either of
-                [`proposal`|`sir`|`latest_sample`].
+                [`proposal`|`sir`|`resample`|`latest_sample`].
             num_chains: number of MCMC chains, generates initial params for each
             num_workers: number of CPU cores for parallization
             show_progress_bars: whether to show progress bars for SIR init
+            kwargs: Passed on to `_build_mcmc_init_fn`.
 
         Returns:
             Tensor: initial parameters, one for each chain
@@ -332,10 +390,11 @@ class MCMCPosterior(NeuralPosterior):
             self.potential_fn,
             transform=self.theta_transform,
             init_strategy=init_strategy,  # type: ignore
+            **kwargs,
         )
 
-        # Parallelize inits for SIR only.
-        if num_workers > 1 and init_strategy == "sir":
+        # Parallelize inits for resampling only.
+        if num_workers > 1 and (init_strategy == "resample" or init_strategy == "sir"):
 
             def seeded_init_fn(seed):
                 torch.manual_seed(seed)
@@ -374,6 +433,7 @@ class MCMCPosterior(NeuralPosterior):
         warmup_steps: int,
         vectorized: bool = False,
         num_workers: int = 1,
+        init_width: Union[float, ndarray] = 0.01,
         show_progress_bars: bool = True,
     ) -> Tensor:
         """Custom implementation of slice sampling using Numpy.
@@ -384,32 +444,47 @@ class MCMCPosterior(NeuralPosterior):
             initial_params: Initial parameters for MCMC chain.
             thin: Thinning (subsampling) factor.
             warmup_steps: Initial number of samples to discard.
-            vectorized: Whether to use a vectorized implementation of
-                the Slice sampler (still experimental).
-            num_workers: number of CPU cores to use
-            seed: seed that will be used to generate sub-seeds for each worker
+            vectorized: Whether to use a vectorized implementation of the Slice sampler.
+            num_workers: Number of CPU cores to use.
+            init_width: Inital width of brackets.
             show_progress_bars: Whether to show a progressbar during sampling;
                 can only be turned off for vectorized sampler.
 
-        Returns: Tensor of shape (num_samples, shape_of_single_theta).
+        Returns:
+            Tensor of shape (num_samples, shape_of_single_theta).
+            Arviz InferenceData object.
         """
 
         num_chains, dim_samples = initial_params.shape
 
-        samples = slice_np_parallized(
-            potential_function,
-            initial_params,
-            num_samples,
+        if not vectorized:
+            SliceSamplerMultiChain = SliceSamplerSerial
+        else:
+            SliceSamplerMultiChain = SliceSamplerVectorized
+
+        posterior_sampler = SliceSamplerMultiChain(
+            init_params=tensor2numpy(initial_params),
+            log_prob_fn=potential_function,
+            num_chains=num_chains,
             thin=thin,
-            warmup_steps=warmup_steps,
-            vectorized=vectorized,
+            verbose=show_progress_bars,
             num_workers=num_workers,
-            show_progress_bars=show_progress_bars,
+            init_width=init_width,
         )
+        warmup_ = warmup_steps * thin
+        num_samples_ = ceil((num_samples * thin) / num_chains)
+        # Run mcmc including warmup
+        samples = posterior_sampler.run(warmup_ + num_samples_)
+        samples = samples[:, warmup_steps:, :]  # discard warmup steps
+        samples = torch.from_numpy(samples)  # chains x samples x dim
+
+        # Save posterior sampler.
+        self._posterior_sampler = posterior_sampler
 
         # Save sample as potential next init (if init_strategy == 'latest_sample').
         self._mcmc_init_params = samples[:, -1, :].reshape(num_chains, dim_samples)
 
+        # Collect samples from all chains.
         samples = samples.reshape(-1, dim_samples)[:num_samples, :]
         assert samples.shape[0] == num_samples
 
@@ -425,7 +500,7 @@ class MCMCPosterior(NeuralPosterior):
         warmup_steps: int = 200,
         num_chains: Optional[int] = 1,
         show_progress_bars: bool = True,
-    ):
+    ) -> Tensor:
         r"""Return samples obtained using Pyro HMC, NUTS for slice kernels.
 
         Args:
@@ -439,7 +514,9 @@ class MCMCPosterior(NeuralPosterior):
             num_chains: Whether to sample in parallel. If None, use all but one CPU.
             show_progress_bars: Whether to show a progressbar during sampling.
 
-        Returns: Tensor of shape (num_samples, shape_of_single_theta).
+        Returns:
+            Tensor of shape (num_samples, shape_of_single_theta).
+            Arviz InferenceData object.
         """
         num_chains = mp.cpu_count() - 1 if num_chains is None else num_chains
 
@@ -449,7 +526,7 @@ class MCMCPosterior(NeuralPosterior):
             kernel=kernels[mcmc_method](potential_fn=potential_function),
             num_samples=(thin * num_samples) // num_chains + num_chains,
             warmup_steps=warmup_steps,
-            initial_params={"": initial_params},
+            initial_params={self.param_name: initial_params},
             num_chains=num_chains,
             mp_context="spawn",
             disable_progbar=not show_progress_bars,
@@ -460,10 +537,13 @@ class MCMCPosterior(NeuralPosterior):
             -1, initial_params.shape[1]  # .shape[1] = dim of theta
         )
 
+        # Save posterior sampler.
+        self._posterior_sampler = sampler
+
         samples = samples[::thin][:num_samples]
         assert samples.shape[0] == num_samples
 
-        return samples
+        return samples.detach()
 
     def _prepare_potential(self, method: str) -> Callable:
         """Combines potential and transform and takes care of gradients and pyro.
@@ -545,7 +625,7 @@ class MCMCPosterior(NeuralPosterior):
                 `map`-attribute, and printed every `save_best_every`-th iteration.
                 Computing the best log-probability creates a significant overhead
                 (thus, the default is `10`.)
-            show_progress_bars: Whether or not to show a progressbar for sampling from
+            show_progress_bars: Whether to show a progressbar during sampling from
                 the posterior.
             force_update: Whether to re-calculate the MAP when x is unchanged and
                 have a cached value.
@@ -566,6 +646,60 @@ class MCMCPosterior(NeuralPosterior):
             show_progress_bars=show_progress_bars,
             force_update=force_update,
         )
+
+    def get_arviz_inference_data(self) -> InferenceData:
+        """Returns arviz InferenceData object constructed most recent samples.
+
+        Note: the InferenceData is constructed using the posterior samples generated in
+        most recent call to `.sample(...)`.
+
+        For Pyro HMC and NUTS kernels InferenceData will contain diagnostics, for Pyro
+        Slice or sbi slice sampling samples, only the samples are added.
+
+        Returns:
+            inference_data: Arviz InferenceData object.
+        """
+        assert (
+            self._posterior_sampler is not None
+        ), """No samples have been generated, call .sample() first."""
+
+        sampler: Union[
+            MCMC, SliceSamplerSerial, SliceSamplerVectorized
+        ] = self._posterior_sampler
+
+        # If Pyro sampler and samples not transformed, use arviz' from_pyro.
+        # Exclude 'slice' kernel as it lacks the 'divergence' diagnostics key.
+        if isinstance(self._posterior_sampler, (HMC, NUTS)) and isinstance(
+            self.theta_transform, torch_tf.IndependentTransform
+        ):
+            inference_data = az.from_pyro(sampler)
+
+        # otherwise get samples from sampler and transform to original space.
+        else:
+            transformed_samples = sampler.get_samples(group_by_chain=True)
+            # Pyro samplers returns dicts, get values.
+            if isinstance(transformed_samples, Dict):
+                # popitem gets last items, [1] get the values as tensor.
+                transformed_samples = transformed_samples.popitem()[1]
+            # Our slice samplers return numpy arrays.
+            elif isinstance(transformed_samples, ndarray):
+                transformed_samples = torch.from_numpy(transformed_samples).type(
+                    torch.float32
+                )
+            # For MultipleIndependent priors transforms first dim must be batch dim.
+            # thus, reshape back and forth to have batch dim in front.
+            samples_shape = transformed_samples.shape
+            samples = self.theta_transform.inv(  # type: ignore
+                transformed_samples.reshape(-1, samples_shape[-1])
+            ).reshape(  # type: ignore
+                *samples_shape
+            )
+
+            inference_data = az.convert_to_inference_data(
+                {f"{self.param_name}": samples}
+            )
+
+        return inference_data
 
 
 def _maybe_use_dict_entry(default: Any, key: str, dict_to_check: Dict) -> Any:
