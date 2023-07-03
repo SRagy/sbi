@@ -11,7 +11,13 @@ from sbi.neural_nets.classifier import (
     build_mlp_classifier,
     build_resnet_classifier,
 )
-from sbi.neural_nets.flow import build_made, build_maf, build_maf_rqs, build_nsf
+from sbi.neural_nets.flow import (
+    build_made,
+    build_maf,
+    build_maf_rqs,
+    build_nsf,
+    build_nsf_double,
+)
 from sbi.neural_nets.mdn import build_mdn
 from sbi.neural_nets.mnle import build_mnle
 
@@ -267,6 +273,8 @@ def posterior_nn(
             return build_maf_rqs(batch_x=batch_theta, batch_y=batch_x, **kwargs)
         elif model == "nsf":
             return build_nsf(batch_x=batch_theta, batch_y=batch_x, **kwargs)
+        elif model == "nsf_double":
+            return build_nsf_double(batch_x=batch_theta, batch_y=batch_x, **kwargs)
         else:
             raise NotImplementedError
 
