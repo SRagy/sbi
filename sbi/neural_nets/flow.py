@@ -21,6 +21,10 @@ from sbi.utils.torchutils import create_alternating_binary_mask
 from sbi.utils.user_input_checks import check_data_device, check_embedding_net_device
 
 
+class double_nn(distributions_.Distribution):
+    pass
+
+
 def build_made(
     batch_x: Tensor,
     batch_y: Tensor,
@@ -547,9 +551,9 @@ def build_nsf_double(
 
     # Combine transforms.
     transform = transforms.CompositeTransform(transform_list)
-    transform_2 = transforms.CompositeTransform(transform_list + transform_list_2)
+    transform_2 = transforms.CompositeTransform(transform_list_2)
     neural_net_proposal = flows.Flow(transform, distribution, embedding_net)
-    neural_net_posterior = flows.Flow(transform_2, distribution, embedding_net)
+    neural_net_posterior = flows.Flow(transform_2, neural_net_proposal, embedding_net)
 
     return neural_net_proposal, neural_net_posterior
 
